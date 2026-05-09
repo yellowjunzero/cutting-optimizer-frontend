@@ -1,5 +1,5 @@
 /**
- * App.jsx — 3D Guillotine Cutting Optimizer Visualizer  (v4 — UX Polish)
+ * App.jsx — 3D Guillotine Cutting Optimizer Visualizer  (v5 — Bug Fixes)
  * ========================================================================
  * npm install @react-three/fiber @react-three/drei three
  *
@@ -8,11 +8,12 @@
  * CRA:   npx create-react-app cutting-viz
  *        → src/App.jsx 교체 후  npm start
  *
- * 변경 이력 (v4)
- *  [1] 입력 필드 순서  T(두께) → W(폭) → L(길이) → Qty
- *  [2] 카메라 좌측 오프셋  — 사이드바 292px 보정 (-0.73 unit)
- *  [3] StockOutline  usable_dims 기준으로 크기·위치 보정
- *  [4] 작업 지시서(Cut List) 모달 추가
+ * 변경 이력 (v5)
+ *  [1] Z축 트리밍 UI 추가 — Settings에 Trimming X / Y / Z 입력 필드 추가
+ *  [2] CAM_X_OFFSET 완전 제거 — Canvas가 flex:1로 공간을 채우므로 수동 보정 불필요
+ *      빈 화면(EmptyState) 카메라도 원점(0,0,0) 기준으로 초기화
+ *  [3] [object Object] 에러 출력 버그 수정
+ *      Pydantic ValidationError(배열) → loc+msg 추출, 객체 → JSON.stringify
  */
 
 import { useState, useRef, useCallback, useMemo, Suspense, useEffect } from "react";
@@ -271,8 +272,6 @@ const API_URL   = "https://cutting-optimizer-backend.onrender.com/optimize";
 const SCALE     = 0.001;
 const STOCK_GAP = 0.4;
 
-// [2] 사이드바 292px → scene unit 오프셋 (캔버스 폭의 ~15% 보정)
-const CAM_X_OFFSET = -0.73;
 
 let _uid = 0;
 const uid = () => `u${++_uid}`;
@@ -473,7 +472,7 @@ function StockOutline({ sm, label }) {
   );
 }
 
-// [2] Scene — 카메라·OrbitControls 에 CAM_X_OFFSET 적용
+// [2] Scene — 수동 오프셋 없이 씬 바운딩 박스 중심(rawCenter)으로 카메라 타겟 설정
 function Scene({ sceneData }) {
   const [hov, setHov] = useState(null);
   const { groups } = sceneData;
@@ -488,9 +487,9 @@ function Scene({ sceneData }) {
     ];
   }, [groups]);
 
-  // 사이드바 때문에 씬이 우측 쏠림 → target을 왼쪽으로 offset
-  const target   = [rawCenter[0] + CAM_X_OFFSET, rawCenter[1], rawCenter[2]];
-  const camStart = [rawCenter[0] + CAM_X_OFFSET + 4, rawCenter[1] + 3, rawCenter[2] + 5];
+  // Canvas가 flex:1로 우측 공간을 꽉 채우므로 별도 오프셋 없이 씬 중심 그대로 사용
+  const target   = [rawCenter[0], rawCenter[1], rawCenter[2]];
+  const camStart = [rawCenter[0] + 4, rawCenter[1] + 3, rawCenter[2] + 5];
 
   return (
     <>
@@ -1040,12 +1039,14 @@ function Sidebar({ settings, onSettings, stocks, onStocks, parts, onParts,
                   onChange={(v) => onSettings({ ...settings, kerf:v })} />
               </div>
               <div>
-                <MLabel>Trimming X / Y</MLabel>
+                <MLabel>Trimming X / Y / Z</MLabel>
                 <div style={{ display:"flex", gap:4 }}>
                   <NInput value={settings.trimming.x} min={0}
                     onChange={(v) => onSettings({ ...settings, trimming:{...settings.trimming, x:v} })} center />
                   <NInput value={settings.trimming.y} min={0}
                     onChange={(v) => onSettings({ ...settings, trimming:{...settings.trimming, y:v} })} center />
+                  <NInput value={settings.trimming.z} min={0}
+                    onChange={(v) => onSettings({ ...settings, trimming:{...settings.trimming, z:v} })} center />
                 </div>
               </div>
             </div>
@@ -1201,7 +1202,17 @@ export default function App() {
       });
       if (!res.ok) {
         const e = await res.json().catch(()=>({}));
-        throw new Error(e.detail || e.error || `HTTP ${res.status}`);
+        // detail이 배열(Pydantic ValidationError)이나 객체인 경우 직렬화
+        let detail = e.detail || e.error || `HTTP ${res.status}`;
+        if (typeof detail === "object") {
+          // Pydantic ValidationError: [{loc, msg, type}, ...] 형태일 때 msg만 추출
+          if (Array.isArray(detail)) {
+            detail = detail.map((d) => `[${(d.loc || []).join(".")}] ${d.msg || JSON.stringify(d)}`).join(" / ");
+          } else {
+            detail = JSON.stringify(detail);
+          }
+        }
+        throw new Error(detail);
       }
       setResponse(await res.json());
     } catch (e) {
@@ -1249,15 +1260,15 @@ export default function App() {
                 <Scene sceneData={sceneData} />
               ) : (
                 <>
-                  {/* [2] 빈 상태도 오프셋 카메라 */}
-                  <PerspectiveCamera makeDefault position={[4 + CAM_X_OFFSET, 3, 5]} fov={45} />
+                  {/* [2] 빈 상태 카메라는 원점(0,0,0) 기준으로 초기화 */}
+                  <PerspectiveCamera makeDefault position={[4, 3, 5]} fov={45} />
                   <OrbitControls
-                    target={[CAM_X_OFFSET, 0, 0]}
+                    target={[0, 0, 0]}
                     enableDamping dampingFactor={0.06}
                   />
                   <ambientLight intensity={0.4} />
                   <Grid
-                    args={[20,20]} position={[1.22 + CAM_X_OFFSET, -0.01, 0]}
+                    args={[20,20]} position={[0, -0.01, 0]}
                     cellSize={0.244} cellColor="#0d1e3a"
                     sectionSize={2.44} sectionColor="#182f5a"
                     fadeDistance={15} infiniteGrid
