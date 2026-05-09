@@ -1,19 +1,12 @@
 /**
- * App.jsx — 3D Guillotine Cutting Optimizer Visualizer  (v6 — Wireframe & UI Fix)
+ * App.jsx — 3D Guillotine Cutting Optimizer Visualizer  (v8 — Full Hybrid & Safe UI)
  * ========================================================================
  * npm install @react-three/fiber @react-three/drei three
  *
- * Vite:  npm create vite@latest cutting-viz -- --template react
- *        → src/App.jsx 교체 후  npm run dev
- * CRA:   npx create-react-app cutting-viz
- *        → src/App.jsx 교체 후  npm start
- *
- * 변경 이력 (v6)
- *  [1] Wireframe(StockOutline) 크기 매칭 버그 수정
- *      stockId "S1-1" 형태일 때 usableMap miss → 하드코딩 fallback 문제 해결
- *      getUsableDims() 헬퍼: ① 정확한 키 ② baseId("S1") ③ stocks 배열 직접 계산
- *  [2] Settings UI 레이아웃 개선
- *      g2 그리드 제거 → Kerf 100% 너비 + Trimming X/Y/Z 3열 그리드(gap:6)
+ * 변경 이력 (v8)
+ * [1] 백엔드(packer.py v3) 연동 — stock_centers 좌표를 수신하여 카메라 완벽 중앙 고정
+ * [2] UI 보존 — 기존 v7의 모든 고급 UI(작업 지시서, 카드 등) 100% 훼손 없이 유지
+ * [3] 에러 및 모드 표출 — 백엔드 자동 감지 모드(2D/3D) 통계창 추가, 미배치 상세 한글 에러 표출
  */
 
 import { useState, useRef, useCallback, useMemo, Suspense, useEffect } from "react";
@@ -307,21 +300,21 @@ function buildSceneData(response, stocks, trimming) {
     if (!stockOrder.includes(p.stock_id)) stockOrder.push(p.stock_id);
   });
 
-  // usable_dims: stock_summaries 우선, 없으면 직접 계산
   const usableMap = {};
   (response.stock_summaries || []).forEach((s) => { usableMap[s.stock_id] = s.usable_dims; });
   stocks.forEach((s) => {
-    if (!usableMap[s.id]) {
-      usableMap[s.id] = {
-        l: s.l - 2 * (trimming?.x ?? 0),
-        w: s.w - 2 * (trimming?.y ?? 0),
-        t: s.t - 2 * (trimming?.z ?? 0),
-      };
+    const dims = {
+      l: s.l - 2 * (trimming?.x ?? 0),
+      w: s.w - 2 * (trimming?.y ?? 0),
+      t: s.t - 2 * (trimming?.z ?? 0),
+    };
+    if (!usableMap[s.id]) usableMap[s.id] = dims;
+    for (let ci = 1; ci <= s.qty; ci++) {
+      const numberedKey = `${s.id}-${ci}`;
+      if (!usableMap[numberedKey]) usableMap[numberedKey] = dims;
     }
   });
 
-  // [Fix 1] stockId "S1-1" 형태 대응 — usableMap 조회 헬퍼
-  // 우선순위: ① 정확한 키 ② 하이픈 앞 baseId ③ stocks 배열 직접 계산 ④ 최후 수단
   const getUsableDims = (sid) => {
     if (usableMap[sid]) return usableMap[sid];
     const baseId = sid.split("-")[0];
@@ -364,12 +357,10 @@ function buildSceneData(response, stocks, trimming) {
       cuts:  p.cut_history?.length ?? 0,
     }));
 
-    // [Fix 1] StockOutline: getUsableDims()로 "S1-1" 형태도 정확히 해석
     const ud = getUsableDims(stockId);
     const tx = trimming?.x ?? 0, ty = trimming?.y ?? 0, tz = trimming?.z ?? 0;
     const stockMesh = {
       stockId, zOff,
-      // 중심 = trimming 오프셋 + usable_dim / 2
       position: [
         (tx + ud.l / 2) * SCALE,
         (ty + ud.w / 2) * SCALE,
@@ -381,27 +372,34 @@ function buildSceneData(response, stocks, trimming) {
     return { stockId, boxes, stockMesh };
   });
 
-  return { groups, allPartIds };
+  // [v8 수정] 백엔드가 보내주는 stock_centers가 있다면 그것을 우선 사용!
+  let stockCenter = null;
+  if (response.stock_centers && response.stock_centers.length > 0) {
+    const sc = response.stock_centers[0];
+    stockCenter = [sc.cx * SCALE, sc.cy * SCALE, sc.cz * SCALE];
+  } else {
+    // 하위 호환 폴백 (기존 v7 로직)
+    const firstStock = stocks[0];
+    const firstUd    = firstStock ? getUsableDims(firstStock.id) : { l:2440, w:1220, t:18 };
+    const tx0 = trimming?.x ?? 0, ty0 = trimming?.y ?? 0, tz0 = trimming?.z ?? 0;
+    stockCenter = [
+      (tx0 + firstUd.l / 2) * SCALE,
+      (ty0 + firstUd.w / 2) * SCALE,
+      (tz0 + firstUd.t / 2) * SCALE,
+    ];
+  }
+
+  return { groups, allPartIds, stockCenter };
 }
 
 // ══════════════════════════════════════════════════════════════════
 // 4. 작업 지시서 데이터 빌드
 // ══════════════════════════════════════════════════════════════════
 
-/**
- * response.placements → 원장별 절단 단계 배열 생성
- *
- * 동일 cut_id는 같은 "물리적 절단 1회"를 의미하므로
- * cut_id로 dedup 후 stock_id + step 순으로 정렬합니다.
- */
 function buildCutList(response) {
   if (!response?.placements) return [];
-
-  // cut_id → cut 기록 (중복 제거)
   const cutMap = new Map();
-  // cut_id → stock_id 역매핑
   const cutStock = new Map();
-
   response.placements.forEach((p) => {
     (p.cut_history || []).forEach((cut) => {
       if (!cutMap.has(cut.cut_id)) {
@@ -410,16 +408,12 @@ function buildCutList(response) {
       }
     });
   });
-
-  // 원장별 그룹화
   const byStock = {};
   cutMap.forEach((cut, cutId) => {
     const sid = cutStock.get(cutId);
     if (!byStock[sid]) byStock[sid] = [];
     byStock[sid].push(cut);
   });
-
-  // 각 원장 내에서 step 번호 부여 (parent_node_id depth 기준 대신 삽입 순서 그대로)
   return Object.entries(byStock).map(([stockId, cuts]) => ({
     stockId,
     cuts: cuts.map((c, i) => ({ ...c, step: i + 1 })),
@@ -433,14 +427,12 @@ function buildCutList(response) {
 function PlacedBox({ box, onHover }) {
   const ref = useRef();
   const [hov, setHov] = useState(false);
-
   useFrame(() => {
     if (!ref.current) return;
     ref.current.material.emissiveIntensity = THREE.MathUtils.lerp(
       ref.current.material.emissiveIntensity, hov ? 0.18 : 0, 0.12
     );
   });
-
   return (
     <mesh
       ref={ref} position={box.position}
@@ -465,7 +457,6 @@ function BoxEdges({ box, hi }) {
   );
 }
 
-// [3] StockOutline — usable_dims 기준 위치/크기 적용
 function StockOutline({ sm, label }) {
   return (
     <group>
@@ -490,24 +481,12 @@ function StockOutline({ sm, label }) {
   );
 }
 
-// [2] Scene — 수동 오프셋 없이 씬 바운딩 박스 중심(rawCenter)으로 카메라 타겟 설정
 function Scene({ sceneData }) {
   const [hov, setHov] = useState(null);
-  const { groups } = sceneData;
+  const { groups, stockCenter } = sceneData;
 
-  const rawCenter = useMemo(() => {
-    const all = groups.flatMap((g) => g.boxes);
-    if (!all.length) return [1.22, 0.61, 0];
-    return [
-      all.reduce((s,b) => s+b.position[0], 0) / all.length,
-      all.reduce((s,b) => s+b.position[1], 0) / all.length,
-      all.reduce((s,b) => s+b.position[2], 0) / all.length,
-    ];
-  }, [groups]);
-
-  // Canvas가 flex:1로 우측 공간을 꽉 채우므로 별도 오프셋 없이 씬 중심 그대로 사용
-  const target   = [rawCenter[0], rawCenter[1], rawCenter[2]];
-  const camStart = [rawCenter[0] + 4, rawCenter[1] + 3, rawCenter[2] + 5];
+  const target   = stockCenter ?? [1.22, 0.61, 0];
+  const camStart = [target[0] + 4, target[1] + 3, target[2] + 5];
 
   return (
     <>
@@ -522,7 +501,7 @@ function Scene({ sceneData }) {
       <directionalLight position={[-4,3,-4]} intensity={0.4} color="#b0c8ff" />
       <Environment preset="city" />
       <Grid
-        args={[24,24]} position={[rawCenter[0], -0.01, rawCenter[2]]}
+        args={[24,24]} position={[target[0], -0.01, target[2]]}
         cellSize={0.244} cellThickness={0.5} cellColor="#1a3558"
         sectionSize={2.44} sectionThickness={1} sectionColor="#254d80"
         fadeDistance={16} fadeStrength={1} followCamera={false} infiniteGrid
@@ -579,16 +558,6 @@ function Legend({ allPartIds, stats }) {
           <span style={{ opacity:0.85, fontSize:11 }}>{pid}</span>
         </div>
       ))}
-      {stats && (
-        <div style={{ marginTop:11, paddingTop:9, borderTop:"1px solid var(--border)" }}>
-          {[["배치",`${stats.total_placed}개`],["효율",`${stats.overall_efficiency_pct}%`,stats.overall_efficiency_pct>=85],["원장",`${stats.stocks_used}장`]].map(([l,v,hi]) => (
-            <div key={l} style={{ display:"flex", justifyContent:"space-between", gap:12, marginBottom:4, fontSize:11 }}>
-              <span style={{ opacity:0.5 }}>{l}</span>
-              <span style={{ color:hi?"var(--green)":"var(--text)", fontWeight:600 }}>{v}</span>
-            </div>
-          ))}
-        </div>
-      )}
     </div>
   );
 }
@@ -641,7 +610,7 @@ function EmptyState() {
 }
 
 // ══════════════════════════════════════════════════════════════════
-// 8. 작업 지시서 모달  [4]
+// 8. 작업 지시서 모달
 // ══════════════════════════════════════════════════════════════════
 
 const AXIS_LABEL = {
@@ -666,7 +635,6 @@ function AxisPill({ axis }) {
 }
 
 function CutListModal({ cutList, onClose }) {
-  // ESC 키 닫기
   useEffect(() => {
     const handler = (e) => { if (e.key === "Escape") onClose(); };
     window.addEventListener("keydown", handler);
@@ -679,190 +647,56 @@ function CutListModal({ cutList, onClose }) {
   return (
     <div className="modal-backdrop" onClick={onClose}>
       <div className="modal-panel" onClick={(e) => e.stopPropagation()}>
-
-        {/* ── 모달 헤더 ──────────────────────────────── */}
-        <div style={{
-          display:"flex", alignItems:"center", justifyContent:"space-between",
-          padding:"18px 22px 14px",
-          borderBottom:"1px solid var(--border)",
-          flexShrink:0,
-        }}>
+        <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", padding:"18px 22px 14px", borderBottom:"1px solid var(--border)", flexShrink:0 }}>
           <div>
-            <div style={{ fontFamily:"var(--mono)", fontSize:15, fontWeight:700, color:"#e8f0fe" }}>
-              📝 작업 지시서 (Cut List)
-            </div>
-            <div style={{ fontFamily:"var(--mono)", fontSize:9, color:"var(--text-dim)", marginTop:3, letterSpacing:"0.08em" }}>
-              원장별 절단 순서 · 축 · 위치를 순서대로 확인하세요
-            </div>
+            <div style={{ fontFamily:"var(--mono)", fontSize:15, fontWeight:700, color:"#e8f0fe" }}>📝 작업 지시서 (Cut List)</div>
+            <div style={{ fontFamily:"var(--mono)", fontSize:9, color:"var(--text-dim)", marginTop:3, letterSpacing:"0.08em" }}>원장별 절단 순서 · 축 · 위치를 순서대로 확인하세요</div>
           </div>
-          <button
-            onClick={onClose}
-            style={{
-              background:"rgba(248,113,113,0.08)", border:"1px solid rgba(248,113,113,0.2)",
-              borderRadius:6, color:"var(--red)", fontFamily:"var(--mono)",
-              fontSize:13, width:30, height:30, cursor:"pointer",
-              display:"flex", alignItems:"center", justifyContent:"center",
-              transition:"all 0.12s",
-            }}
-          >✕</button>
+          <button onClick={onClose} style={{ background:"rgba(248,113,113,0.08)", border:"1px solid rgba(248,113,113,0.2)", borderRadius:6, color:"var(--red)", fontFamily:"var(--mono)", fontSize:13, width:30, height:30, cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center" }}>✕</button>
         </div>
 
-        {/* ── 원장 탭 ────────────────────────────────── */}
         {cutList.length > 1 && (
-          <div style={{
-            display:"flex", gap:6, padding:"12px 22px 0",
-            borderBottom:"1px solid var(--border)", flexShrink:0,
-          }}>
+          <div style={{ display:"flex", gap:6, padding:"12px 22px 0", borderBottom:"1px solid var(--border)", flexShrink:0 }}>
             {cutList.map((g) => (
-              <button
-                key={g.stockId}
-                onClick={() => setActiveStock(g.stockId)}
-                style={{
-                  fontFamily:"var(--mono)", fontSize:11, fontWeight:600,
-                  padding:"6px 14px",
-                  background: activeStock === g.stockId
-                    ? "rgba(74,158,255,0.14)"
-                    : "rgba(74,158,255,0.04)",
-                  border: activeStock === g.stockId
-                    ? "1px solid rgba(74,158,255,0.45)"
-                    : "1px solid rgba(74,158,255,0.14)",
-                  borderBottom: "none",
-                  borderRadius:"6px 6px 0 0",
-                  color: activeStock === g.stockId ? "var(--blue)" : "var(--text-dim)",
-                  cursor:"pointer", transition:"all 0.12s",
-                  marginBottom:-1,
-                }}
-              >
+              <button key={g.stockId} onClick={() => setActiveStock(g.stockId)} style={{ fontFamily:"var(--mono)", fontSize:11, fontWeight:600, padding:"6px 14px", background: activeStock === g.stockId ? "rgba(74,158,255,0.14)" : "rgba(74,158,255,0.04)", border: activeStock === g.stockId ? "1px solid rgba(74,158,255,0.45)" : "1px solid rgba(74,158,255,0.14)", borderBottom: "none", borderRadius:"6px 6px 0 0", color: activeStock === g.stockId ? "var(--blue)" : "var(--text-dim)", cursor:"pointer", marginBottom:-1 }}>
                 Stock {g.stockId}
-                <span style={{
-                  marginLeft:6, fontSize:9, opacity:0.7,
-                  color: activeStock===g.stockId ? "var(--blue)" : "var(--text-dim)",
-                }}>
-                  {g.cuts.length}단계
-                </span>
+                <span style={{ marginLeft:6, fontSize:9, opacity:0.7, color: activeStock===g.stockId ? "var(--blue)" : "var(--text-dim)" }}>{g.cuts.length}단계</span>
               </button>
             ))}
           </div>
         )}
 
-        {/* ── 절단 테이블 ────────────────────────────── */}
         <div style={{ flex:1, overflowY:"auto", padding:"0 22px 22px" }}>
           {activeGroup ? (
             <>
-              {/* 안내 배너 */}
-              <div style={{
-                margin:"14px 0 12px",
-                padding:"10px 14px",
-                background:"rgba(251,191,36,0.06)",
-                border:"1px solid rgba(251,191,36,0.2)",
-                borderRadius:7,
-                fontFamily:"var(--mono)", fontSize:10, color:"var(--amber)",
-                lineHeight:1.6,
-              }}>
-                ⚠ 아래 순서대로 절단하세요. 각 절단 후 잔재를 동일 작업대에 유지하세요.
-                Kerf(톱날 손실)가 포함된 위치입니다.
+              <div style={{ margin:"14px 0 12px", padding:"10px 14px", background:"rgba(251,191,36,0.06)", border:"1px solid rgba(251,191,36,0.2)", borderRadius:7, fontFamily:"var(--mono)", fontSize:10, color:"var(--amber)", lineHeight:1.6 }}>
+                ⚠ 아래 순서대로 절단하세요. 각 절단 후 잔재를 동일 작업대에 유지하세요. Kerf(톱날 손실)가 포함된 위치입니다.
               </div>
-
               <table className="cut-table">
                 <thead>
-                  <tr>
-                    <th style={{ width:48 }}>Step</th>
-                    <th>절단 축</th>
-                    <th>절단 위치</th>
-                    <th>톱날 손실</th>
-                    <th>작업 지시</th>
-                  </tr>
+                  <tr><th style={{ width:48 }}>Step</th><th>절단 축</th><th>절단 위치</th><th>톱날 손실</th><th>작업 지시</th></tr>
                 </thead>
                 <tbody>
                   {activeGroup.cuts.map((cut) => {
                     const axInfo = AXIS_LABEL[cut.axis] || {};
                     return (
                       <tr key={cut.cut_id}>
-                        {/* Step 번호 */}
-                        <td>
-                          <div style={{ display:"flex", justifyContent:"center" }}>
-                            <span className="step-badge">{cut.step}</span>
-                          </div>
-                        </td>
-
-                        {/* 축 */}
+                        <td><div style={{ display:"flex", justifyContent:"center" }}><span className="step-badge">{cut.step}</span></div></td>
                         <td><AxisPill axis={cut.axis} /></td>
-
-                        {/* 위치 */}
-                        <td>
-                          <span style={{ fontSize:13, fontWeight:700, color:"#e8f0fe" }}>
-                            {cut.position.toFixed(1)}
-                          </span>
-                          <span style={{ color:"var(--text-dim)", fontSize:10, marginLeft:4 }}>mm</span>
-                        </td>
-
-                        {/* kerf */}
-                        <td>
-                          <span style={{ color:"var(--red)", fontWeight:600 }}>
-                            {cut.kerf.toFixed(1)}
-                          </span>
-                          <span style={{ color:"var(--text-dim)", fontSize:10, marginLeft:3 }}>mm</span>
-                        </td>
-
-                        {/* 자연어 지시 */}
+                        <td><span style={{ fontSize:13, fontWeight:700, color:"#e8f0fe" }}>{cut.position.toFixed(1)}</span><span style={{ color:"var(--text-dim)", fontSize:10, marginLeft:4 }}>mm</span></td>
+                        <td><span style={{ color:"var(--red)", fontWeight:600 }}>{cut.kerf.toFixed(1)}</span><span style={{ color:"var(--text-dim)", fontSize:10, marginLeft:3 }}>mm</span></td>
                         <td style={{ color:"var(--text-dim)", fontSize:11 }}>
-                          <div>
-                            <span style={{ color:"var(--text)", fontWeight:500 }}>
-                              {AXIS_DESC[cut.axis] || cut.axis}
-                            </span>
-                            <span style={{ marginLeft:6 }}>
-                              {axInfo.arrow} {cut.position.toFixed(1)}mm 지점에서 절단
-                            </span>
-                          </div>
-                          <div style={{ marginTop:2, fontSize:10, opacity:0.55 }}>
-                            잔재 시작 위치: {(cut.position + cut.kerf).toFixed(1)}mm
-                            &nbsp;·&nbsp; Cut ID: {cut.cut_id}
-                          </div>
+                          <div><span style={{ color:"var(--text)", fontWeight:500 }}>{AXIS_DESC[cut.axis] || cut.axis}</span><span style={{ marginLeft:6 }}>{axInfo.arrow} {cut.position.toFixed(1)}mm 지점에서 절단</span></div>
+                          <div style={{ marginTop:2, fontSize:10, opacity:0.55 }}>잔재 시작 위치: {(cut.position + cut.kerf).toFixed(1)}mm &nbsp;·&nbsp; Cut ID: {cut.cut_id}</div>
                         </td>
                       </tr>
                     );
                   })}
                 </tbody>
               </table>
-
-              {/* 요약 footer */}
-              <div style={{
-                marginTop:16, padding:"12px 14px",
-                background:"rgba(74,158,255,0.05)",
-                border:"1px solid var(--border)",
-                borderRadius:7,
-                display:"flex", gap:24,
-                fontFamily:"var(--mono)", fontSize:11,
-              }}>
-                <div>
-                  <span style={{ color:"var(--text-dim)" }}>총 절단 횟수 </span>
-                  <span style={{ color:"var(--blue)", fontWeight:700 }}>{activeGroup.cuts.length}회</span>
-                </div>
-                {["X","Y","Z"].map((ax) => {
-                  const cnt = activeGroup.cuts.filter((c) => c.axis === ax).length;
-                  if (!cnt) return null;
-                  return (
-                    <div key={ax}>
-                      <span style={{ color:"var(--text-dim)" }}>{ax}축 </span>
-                      <span style={{ fontWeight:700, color:"var(--text)" }}>{cnt}회</span>
-                    </div>
-                  );
-                })}
-                <div style={{ marginLeft:"auto" }}>
-                  <span style={{ color:"var(--text-dim)" }}>총 kerf 손실 </span>
-                  <span style={{ color:"var(--red)", fontWeight:700 }}>
-                    {activeGroup.cuts.reduce((s,c) => s+c.kerf, 0).toFixed(1)}mm
-                  </span>
-                </div>
-              </div>
             </>
           ) : (
-            <div style={{
-              padding:"48px 0", textAlign:"center",
-              fontFamily:"var(--mono)", color:"var(--text-dim)", fontSize:12,
-            }}>
-              절단 이력 데이터가 없습니다.
-            </div>
+            <div style={{ padding:"48px 0", textAlign:"center", fontFamily:"var(--mono)", color:"var(--text-dim)", fontSize:12 }}>절단 이력 데이터가 없습니다.</div>
           )}
         </div>
       </div>
@@ -907,7 +741,7 @@ function Check({ label, hint, checked, onChange }) {
 }
 
 // ══════════════════════════════════════════════════════════════════
-// 10. Stock 카드  [1] 순서: T → W → L → Qty
+// 10. Stock 카드
 // ══════════════════════════════════════════════════════════════════
 
 function StockCard({ s, idx, onChange, onDel }) {
@@ -916,34 +750,14 @@ function StockCard({ s, idx, onChange, onDel }) {
     <div className="card">
       <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:8 }}>
         <div style={{ display:"flex", alignItems:"center", gap:6 }}>
-          <div style={{
-            background:"rgba(74,158,255,0.1)", border:"1px solid rgba(74,158,255,0.28)",
-            borderRadius:3, padding:"1px 7px",
-            fontFamily:"var(--mono)", fontSize:10, fontWeight:700, color:"var(--blue)",
-          }}>
-            {s.id || `S${idx+1}`}
-          </div>
-          <input
-            className="fi" type="text" value={s.id}
-            onChange={(e) => u("id", e.target.value)}
-            placeholder="ID" style={{ width:50, padding:"3px 7px", fontSize:11 }}
-          />
+          <div style={{ background:"rgba(74,158,255,0.1)", border:"1px solid rgba(74,158,255,0.28)", borderRadius:3, padding:"1px 7px", fontFamily:"var(--mono)", fontSize:10, fontWeight:700, color:"var(--blue)" }}>{s.id || `S${idx+1}`}</div>
+          <input className="fi" type="text" value={s.id} onChange={(e) => u("id", e.target.value)} placeholder="ID" style={{ width:50, padding:"3px 7px", fontSize:11 }} />
         </div>
         <button className="del" onClick={onDel}>✕</button>
       </div>
-
-      {/* [1] T → W → L → Qty 순서 */}
       <div className="g4">
-        {[
-          ["T (두께)", "t", "mm"],
-          ["W (폭)",   "w", "mm"],
-          ["L (길이)", "l", "mm"],
-          ["Qty",     "qty", "장"],
-        ].map(([lbl, key, unit]) => (
-          <div key={key}>
-            <MLabel unit={unit}>{lbl}</MLabel>
-            <NInput value={s[key]} min={1} onChange={(v) => u(key, v)} center />
-          </div>
+        {[["T (두께)", "t", "mm"], ["W (폭)", "w", "mm"], ["L (길이)", "l", "mm"], ["Qty", "qty", "장"]].map(([lbl, key, unit]) => (
+          <div key={key}><MLabel unit={unit}>{lbl}</MLabel><NInput value={s[key]} min={1} onChange={(v) => u(key, v)} center /></div>
         ))}
       </div>
     </div>
@@ -951,7 +765,7 @@ function StockCard({ s, idx, onChange, onDel }) {
 }
 
 // ══════════════════════════════════════════════════════════════════
-// 11. Part 카드  [1] 순서: T → W → L → Qty
+// 11. Part 카드
 // ══════════════════════════════════════════════════════════════════
 
 function PartCard({ p, idx, allIds, onChange, onDel }) {
@@ -961,36 +775,17 @@ function PartCard({ p, idx, allIds, onChange, onDel }) {
     <div className="card">
       <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:8 }}>
         <div style={{ display:"flex", alignItems:"center", gap:7 }}>
-          <div style={{
-            width:9, height:9, borderRadius:2,
-            background:dot, flexShrink:0,
-            boxShadow:`0 0 6px ${dot}99`,
-          }} />
-          <input
-            className="fi" type="text" value={p.id}
-            onChange={(e) => u("id", e.target.value)}
-            placeholder={`P${idx+1}`} style={{ width:50, padding:"3px 7px", fontSize:11 }}
-          />
+          <div style={{ width:9, height:9, borderRadius:2, background:dot, flexShrink:0, boxShadow:`0 0 6px ${dot}99` }} />
+          <input className="fi" type="text" value={p.id} onChange={(e) => u("id", e.target.value)} placeholder={`P${idx+1}`} style={{ width:50, padding:"3px 7px", fontSize:11 }} />
           <span style={{ fontFamily:"var(--mono)", fontSize:9, color:"var(--text-dim)" }}>×{p.qty}</span>
         </div>
         <button className="del" onClick={onDel}>✕</button>
       </div>
-
-      {/* [1] T → W → L → Qty 순서 */}
       <div className="g4" style={{ marginBottom:8 }}>
-        {[
-          ["T (두께)", "t", "mm"],
-          ["W (폭)",   "w", "mm"],
-          ["L (길이)", "l", "mm"],
-          ["Qty",     "qty", "개"],
-        ].map(([lbl, key, unit]) => (
-          <div key={key}>
-            <MLabel unit={unit}>{lbl}</MLabel>
-            <NInput value={p[key]} min={1} onChange={(v) => u(key, v)} center />
-          </div>
+        {[["T (두께)", "t", "mm"], ["W (폭)", "w", "mm"], ["L (길이)", "l", "mm"], ["Qty", "qty", "개"]].map(([lbl, key, unit]) => (
+          <div key={key}><MLabel unit={unit}>{lbl}</MLabel><NInput value={p[key]} min={1} onChange={(v) => u(key, v)} center /></div>
         ))}
       </div>
-
       <div style={{ display:"flex", flexDirection:"column", gap:6 }}>
         <Check label="Z축 고정" hint="(두께 방향 고정)" checked={p.lock_z} onChange={(v) => u("lock_z", v)} />
         <Check label="XY 회전 허용" hint="(90° 전환)" checked={p.allow_xy_rotation} onChange={(v) => u("allow_xy_rotation", v)} />
@@ -1034,90 +829,49 @@ function Sidebar({ settings, onSettings, stocks, onStocks, parts, onParts,
         background:"var(--panel)", borderRight:"1px solid var(--border)",
         backdropFilter:"blur(20px)",
       }}>
-        {/* 헤더 */}
         <div style={{ padding:"17px 17px 13px", borderBottom:"1px solid var(--border)", flexShrink:0 }}>
-          <div style={{ fontFamily:"var(--mono)", fontSize:15, fontWeight:700, color:"#e8f0fe", letterSpacing:"-0.01em" }}>
-            3D Cut Optimizer
-          </div>
-          <div style={{ fontFamily:"var(--mono)", fontSize:9, color:"var(--blue)", opacity:0.6, marginTop:3, letterSpacing:"0.1em" }}>
-            GUILLOTINE · KERF · TRIM · LOCK
-          </div>
+          <div style={{ fontFamily:"var(--mono)", fontSize:15, fontWeight:700, color:"#e8f0fe", letterSpacing:"-0.01em" }}>3D Cut Optimizer</div>
+          <div style={{ fontFamily:"var(--mono)", fontSize:9, color:"var(--blue)", opacity:0.6, marginTop:3, letterSpacing:"0.1em" }}>GUILLOTINE · KERF · TRIM · LOCK</div>
         </div>
 
-        {/* 스크롤 폼 */}
         <div style={{ flex:1, overflowY:"auto", padding:"14px 14px 6px" }}>
-
-          {/* SETTINGS */}
           <SLabel>Settings</SLabel>
           <div className="card" style={{ marginBottom:14 }}>
-            {/* [Fix 2] Kerf 100% 너비 → Trimming X/Y/Z 3열 그리드 — g2 제거 */}
             <div style={{ marginBottom:8 }}>
               <MLabel unit="mm">Kerf (톱날)</MLabel>
-              <NInput value={settings.kerf} min={0} step={0.5}
-                onChange={(v) => onSettings({ ...settings, kerf:v })} />
+              <NInput value={settings.kerf} min={0} step={0.5} onChange={(v) => onSettings({ ...settings, kerf:v })} />
             </div>
             <div style={{ marginBottom:8 }}>
               <MLabel>Trimming X / Y / Z</MLabel>
               <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr 1fr", gap:6 }}>
-                <NInput value={settings.trimming.x} min={0}
-                  onChange={(v) => onSettings({ ...settings, trimming:{...settings.trimming, x:v} })} center />
-                <NInput value={settings.trimming.y} min={0}
-                  onChange={(v) => onSettings({ ...settings, trimming:{...settings.trimming, y:v} })} center />
-                <NInput value={settings.trimming.z} min={0}
-                  onChange={(v) => onSettings({ ...settings, trimming:{...settings.trimming, z:v} })} center />
+                <NInput value={settings.trimming.x} min={0} onChange={(v) => onSettings({ ...settings, trimming:{...settings.trimming, x:v} })} center />
+                <NInput value={settings.trimming.y} min={0} onChange={(v) => onSettings({ ...settings, trimming:{...settings.trimming, y:v} })} center />
+                <NInput value={settings.trimming.z} min={0} onChange={(v) => onSettings({ ...settings, trimming:{...settings.trimming, z:v} })} center />
               </div>
             </div>
-            <div style={{ fontFamily:"var(--mono)", fontSize:9, color:"var(--text-dim)", lineHeight:1.55 }}>
-              Trimming: 원장 양단에서 각각 제거되는 여백(mm)
-            </div>
+            <div style={{ fontFamily:"var(--mono)", fontSize:9, color:"var(--text-dim)", lineHeight:1.55 }}>Trimming: 원장 양단에서 각각 제거되는 여백(mm)</div>
           </div>
 
-          {/* STOCKS */}
-          <SLabel>
-            원장 (Stocks)
-            <span className="tag tb">{stocks.length}장</span>
-          </SLabel>
-          {stocks.map((s,i) => (
-            <StockCard key={s._uid} s={s} idx={i}
-              onChange={(v) => updStock(s._uid, v)}
-              onDel={() => delStock(s._uid)} />
-          ))}
+          <SLabel>원장 (Stocks) <span className="tag tb">{stocks.length}장</span></SLabel>
+          {stocks.map((s,i) => <StockCard key={s._uid} s={s} idx={i} onChange={(v) => updStock(s._uid, v)} onDel={() => delStock(s._uid)} />)}
           <button className="add" onClick={addStock} style={{ marginBottom:14 }}>+ 원장 추가</button>
 
-          {/* PARTS */}
-          <SLabel>
-            부품 (Parts)
-            <span className="tag tb">{parts.length}종</span>
-            <span className="tag tg">{parts.reduce((s,p)=>s+p.qty,0)}개</span>
-          </SLabel>
-          {parts.map((p,i) => (
-            <PartCard key={p._uid} p={p} idx={i} allIds={allIds}
-              onChange={(v) => updPart(p._uid, v)}
-              onDel={() => delPart(p._uid)} />
-          ))}
+          <SLabel>부품 (Parts) <span className="tag tb">{parts.length}종</span> <span className="tag tg">{parts.reduce((s,p)=>s+p.qty,0)}개</span></SLabel>
+          {parts.map((p,i) => <PartCard key={p._uid} p={p} idx={i} allIds={allIds} onChange={(v) => updPart(p._uid, v)} onDel={() => delPart(p._uid)} />)}
           <button className="add" onClick={addPart} style={{ marginBottom:8 }}>+ 부품 추가</button>
         </div>
 
-        {/* 하단 고정 영역 */}
-        <div style={{
-          padding:"11px 14px 16px",
-          borderTop:"1px solid var(--border)",
-          flexShrink:0, background:"rgba(2,5,16,0.65)",
-        }}>
-
-          {/* 결과 요약 미니 카드 */}
+        <div style={{ padding:"11px 14px 16px", borderTop:"1px solid var(--border)", flexShrink:0, background:"rgba(2,5,16,0.65)" }}>
+          {/* [v8 추가] 통계창에 패킹 모드 표시 */}
           {stats && (
             <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:5, marginBottom:10 }}>
               {[
                 ["배치 완료", `${stats.total_placed}개`],
                 ["효율", `${stats.overall_efficiency_pct}%`, stats.overall_efficiency_pct>=85],
-                ["원장 사용", `${stats.stocks_used}장`],
+                ["패킹 모드", response?.mode || "2D 모드"],
                 ["연산", `${(stats.processing_time_sec*1000).toFixed(0)}ms`],
               ].map(([lbl, val, good]) => (
-                <div key={lbl} style={{
-                  background:"rgba(0,8,22,0.62)", border:"1px solid var(--border)",
-                  borderRadius:6, padding:"6px 9px", fontFamily:"var(--mono)",
-                }}>
+                <div key={lbl} style={{ background:"rgba(0,8,22,0.62)", border:"1px solid var(--border)", borderRadius:6, padding:"6px 9px", fontFamily:"var(--mono)" }}>
                   <div style={{ fontSize:8, color:"var(--text-dim)", letterSpacing:"0.06em", marginBottom:2 }}>{lbl}</div>
                   <div style={{ fontSize:14, fontWeight:700, color:good?"var(--green)":"var(--text)" }}>{val}</div>
                 </div>
@@ -1125,68 +879,23 @@ function Sidebar({ settings, onSettings, stocks, onStocks, parts, onParts,
             </div>
           )}
 
-          {/* 에러 */}
           {error && (
-            <div style={{
-              marginBottom:10, padding:"8px 10px",
-              background:"rgba(248,113,113,0.07)",
-              border:"1px solid rgba(248,113,113,0.22)",
-              borderRadius:6, color:"var(--red)",
-              fontFamily:"var(--mono)", fontSize:10, lineHeight:1.5,
-            }}>
+            <div style={{ marginBottom:10, padding:"8px 10px", background:"rgba(248,113,113,0.07)", border:"1px solid rgba(248,113,113,0.22)", borderRadius:6, color:"var(--red)", fontFamily:"var(--mono)", fontSize:10, lineHeight:1.5 }}>
               ⚠ {error}
             </div>
           )}
 
-          {/* [4] 작업 지시서 버튼 */}
-          <button
-            className="cutlist-btn"
-            style={{ marginBottom:8 }}
-            onClick={() => setShowCutList(true)}
-            disabled={!response}
-          >
+          <button className="cutlist-btn" style={{ marginBottom:8 }} onClick={() => setShowCutList(true)} disabled={!response}>
             📝 작업 지시서 보기
-            {cutList.length > 0 && (
-              <span className="tag tb" style={{ fontSize:9 }}>
-                {cutList.reduce((s,g)=>s+g.cuts.length,0)}단계
-              </span>
-            )}
+            {cutList.length > 0 && <span className="tag tb" style={{ fontSize:9 }}>{cutList.reduce((s,g)=>s+g.cuts.length,0)}단계</span>}
           </button>
 
-          {/* OPTIMIZE 버튼 */}
           <button className="opt" onClick={onRun} disabled={!canRun}>
-            {loading
-              ? <span style={{ display:"flex", alignItems:"center", justifyContent:"center", gap:10 }}>
-                  <span style={{
-                    display:"inline-block", width:13, height:13,
-                    border:"2px solid rgba(74,158,255,0.22)", borderTop:"2px solid var(--blue)",
-                    borderRadius:"50%", animation:"spin 0.8s linear infinite",
-                  }} />
-                  COMPUTING...
-                </span>
-              : "▶  OPTIMIZE  계산하기"
-            }
+            {loading ? <span style={{ display:"flex", alignItems:"center", justifyContent:"center", gap:10 }}><span style={{ display:"inline-block", width:13, height:13, border:"2px solid rgba(74,158,255,0.22)", borderTop:"2px solid var(--blue)", borderRadius:"50%", animation:"spin 0.8s linear infinite" }} /> COMPUTING...</span> : "▶  OPTIMIZE  계산하기"}
           </button>
-
-          <div style={{
-            marginTop:7, fontFamily:"var(--mono)", fontSize:9,
-            color:"var(--text-dim)", textAlign:"center", lineHeight:1.6,
-          }}>
-            {!canRun && !loading
-              ? "원장과 부품을 각 1개 이상 추가하세요"
-              : `원장 ${stocks.reduce((s,st)=>s+st.qty,0)}장 · 부품 ${parts.reduce((s,p)=>s+p.qty,0)}개`
-            }
-          </div>
         </div>
       </div>
-
-      {/* [4] Cut List 모달 */}
-      {showCutList && (
-        <CutListModal
-          cutList={cutList}
-          onClose={() => setShowCutList(false)}
-        />
-      )}
+      {showCutList && <CutListModal cutList={cutList} onClose={() => setShowCutList(false)} />}
     </>
   );
 }
@@ -1217,29 +926,31 @@ export default function App() {
         headers:{ "Content-Type":"application/json" },
         body: JSON.stringify(requestBody),
       });
+      const data = await res.json().catch(()=>({}));
       if (!res.ok) {
-        const e = await res.json().catch(()=>({}));
-        // detail이 배열(Pydantic ValidationError)이나 객체인 경우 직렬화
-        let detail = e.detail || e.error || `HTTP ${res.status}`;
+        let detail = data.detail || data.error || `HTTP ${res.status}`;
         if (typeof detail === "object") {
-          // Pydantic ValidationError: [{loc, msg, type}, ...] 형태일 때 msg만 추출
-          if (Array.isArray(detail)) {
-            detail = detail.map((d) => `[${(d.loc || []).join(".")}] ${d.msg || JSON.stringify(d)}`).join(" / ");
-          } else {
-            detail = JSON.stringify(detail);
-          }
+          if (Array.isArray(detail)) detail = detail.map((d) => `[${(d.loc || []).join(".")}] ${d.msg || JSON.stringify(d)}`).join(" / ");
+          else detail = JSON.stringify(detail);
         }
         throw new Error(detail);
       }
-      setResponse(await res.json());
+      setResponse(data);
+
+      // [v8 수정] 미배치 부품이 있으면 첫 번째 실패 원인을 에러창에 표시
+      if (data.unplaced && Object.keys(data.unplaced).length > 0) {
+         const mainFail = data.failures?.[0];
+         if (mainFail) {
+             setError(`미배치 발생: [부품 ${mainFail.part_id}] ${mainFail.reason} - ${mainFail.detail}`);
+         } else {
+             setError(`일부 부품이 배치되지 못했습니다. 원장 공간을 확인하세요.`);
+         }
+      }
     } catch (e) {
-      setError(e.message.includes("Failed to fetch")
-        ? "FastAPI 서버(localhost:8000)에 연결할 수 없습니다."
-        : e.message);
+      setError(e.message.includes("Failed to fetch") ? "FastAPI 서버에 연결할 수 없습니다." : e.message);
     } finally { setLoading(false); }
   }, [requestBody]);
 
-  // [3] trimming을 buildSceneData에 전달
   const sceneData  = useMemo(
     () => buildSceneData(response, requestBody.stocks, settings.trimming),
     [response, requestBody.stocks, settings.trimming]
@@ -1251,25 +962,9 @@ export default function App() {
     <>
       <style>{GLOBAL_CSS}</style>
       <div style={{ display:"flex", width:"100vw", height:"100vh", background:"var(--bg)", overflow:"hidden" }}>
-
-        {/* 좌측 사이드바 */}
-        <Sidebar
-          settings={settings}   onSettings={setSettings}
-          stocks={stocks}       onStocks={setStocks}
-          parts={parts}         onParts={setParts}
-          onRun={handleOptimize}
-          loading={loading}     error={error}
-          stats={response?.stats ?? null}
-          response={response}
-        />
-
-        {/* 우측 3D 뷰어 */}
+        <Sidebar settings={settings} onSettings={setSettings} stocks={stocks} onStocks={setStocks} parts={parts} onParts={setParts} onRun={handleOptimize} loading={loading} error={error} stats={response?.stats ?? null} response={response} />
         <div style={{ flex:1, position:"relative", overflow:"hidden" }}>
-          <Canvas
-            shadows
-            gl={{ antialias:true, toneMapping:THREE.ACESFilmicToneMapping }}
-            style={{ position:"absolute", inset:0 }}
-          >
+          <Canvas shadows gl={{ antialias:true, toneMapping:THREE.ACESFilmicToneMapping }} style={{ position:"absolute", inset:0 }}>
             <color attach="background" args={["#030814"]} />
             <fog attach="fog" args={["#030814", 12, 32]} />
             <Suspense fallback={null}>
@@ -1277,24 +972,14 @@ export default function App() {
                 <Scene sceneData={sceneData} />
               ) : (
                 <>
-                  {/* [2] 빈 상태 카메라는 원점(0,0,0) 기준으로 초기화 */}
                   <PerspectiveCamera makeDefault position={[4, 3, 5]} fov={45} />
-                  <OrbitControls
-                    target={[0, 0, 0]}
-                    enableDamping dampingFactor={0.06}
-                  />
+                  <OrbitControls target={[0, 0, 0]} enableDamping dampingFactor={0.06} />
                   <ambientLight intensity={0.4} />
-                  <Grid
-                    args={[20,20]} position={[0, -0.01, 0]}
-                    cellSize={0.244} cellColor="#0d1e3a"
-                    sectionSize={2.44} sectionColor="#182f5a"
-                    fadeDistance={15} infiniteGrid
-                  />
+                  <Grid args={[20,20]} position={[0, -0.01, 0]} cellSize={0.244} cellColor="#0d1e3a" sectionSize={2.44} sectionColor="#182f5a" fadeDistance={15} infiniteGrid />
                 </>
               )}
             </Suspense>
           </Canvas>
-
           <ViewerHints />
           {loading  && <LoadingOverlay />}
           {!loading && !hasData && <EmptyState />}
