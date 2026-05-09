@@ -1,5 +1,5 @@
 /**
- * App.jsx — 3D Guillotine Cutting Optimizer Visualizer  (v5 — Bug Fixes)
+ * App.jsx — 3D Guillotine Cutting Optimizer Visualizer  (v6 — Wireframe & UI Fix)
  * ========================================================================
  * npm install @react-three/fiber @react-three/drei three
  *
@@ -8,12 +8,12 @@
  * CRA:   npx create-react-app cutting-viz
  *        → src/App.jsx 교체 후  npm start
  *
- * 변경 이력 (v5)
- *  [1] Z축 트리밍 UI 추가 — Settings에 Trimming X / Y / Z 입력 필드 추가
- *  [2] CAM_X_OFFSET 완전 제거 — Canvas가 flex:1로 공간을 채우므로 수동 보정 불필요
- *      빈 화면(EmptyState) 카메라도 원점(0,0,0) 기준으로 초기화
- *  [3] [object Object] 에러 출력 버그 수정
- *      Pydantic ValidationError(배열) → loc+msg 추출, 객체 → JSON.stringify
+ * 변경 이력 (v6)
+ *  [1] Wireframe(StockOutline) 크기 매칭 버그 수정
+ *      stockId "S1-1" 형태일 때 usableMap miss → 하드코딩 fallback 문제 해결
+ *      getUsableDims() 헬퍼: ① 정확한 키 ② baseId("S1") ③ stocks 배열 직접 계산
+ *  [2] Settings UI 레이아웃 개선
+ *      g2 그리드 제거 → Kerf 100% 너비 + Trimming X/Y/Z 3열 그리드(gap:6)
  */
 
 import { useState, useRef, useCallback, useMemo, Suspense, useEffect } from "react";
@@ -320,6 +320,24 @@ function buildSceneData(response, stocks, trimming) {
     }
   });
 
+  // [Fix 1] stockId "S1-1" 형태 대응 — usableMap 조회 헬퍼
+  // 우선순위: ① 정확한 키 ② 하이픈 앞 baseId ③ stocks 배열 직접 계산 ④ 최후 수단
+  const getUsableDims = (sid) => {
+    if (usableMap[sid]) return usableMap[sid];
+    const baseId = sid.split("-")[0];
+    if (usableMap[baseId]) return usableMap[baseId];
+    const src = stocks.find((s) => s.id === baseId);
+    if (src) return {
+      l: src.l - 2 * (trimming?.x ?? 0),
+      w: src.w - 2 * (trimming?.y ?? 0),
+      t: src.t - 2 * (trimming?.z ?? 0),
+    };
+    const first = stocks[0];
+    return first
+      ? { l: first.l - 2*(trimming?.x??0), w: first.w - 2*(trimming?.y??0), t: first.t - 2*(trimming?.z??0) }
+      : { l: 2440, w: 1220, t: 18 };
+  };
+
   const allPartIds = [...new Set(response.placements.map((p) => p.part_id))];
 
   const groups = stockOrder.map((stockId, si) => {
@@ -327,7 +345,7 @@ function buildSceneData(response, stocks, trimming) {
 
     let zOff = 0;
     for (let i = 0; i < si; i++) {
-      const d = usableMap[stockOrder[i]] || { t: 18 };
+      const d = getUsableDims(stockOrder[i]);
       zOff += d.t * SCALE + STOCK_GAP;
     }
 
@@ -346,8 +364,8 @@ function buildSceneData(response, stocks, trimming) {
       cuts:  p.cut_history?.length ?? 0,
     }));
 
-    // [3] StockOutline: usable_dims 크기 + trimming 오프셋 반영
-    const ud = usableMap[stockId] || { l:2440, w:1220, t:18 };
+    // [Fix 1] StockOutline: getUsableDims()로 "S1-1" 형태도 정확히 해석
+    const ud = getUsableDims(stockId);
     const tx = trimming?.x ?? 0, ty = trimming?.y ?? 0, tz = trimming?.z ?? 0;
     const stockMesh = {
       stockId, zOff,
@@ -1032,22 +1050,21 @@ function Sidebar({ settings, onSettings, stocks, onStocks, parts, onParts,
           {/* SETTINGS */}
           <SLabel>Settings</SLabel>
           <div className="card" style={{ marginBottom:14 }}>
-            <div className="g2" style={{ marginBottom:8 }}>
-              <div>
-                <MLabel unit="mm">Kerf (톱날)</MLabel>
-                <NInput value={settings.kerf} min={0} step={0.5}
-                  onChange={(v) => onSettings({ ...settings, kerf:v })} />
-              </div>
-              <div>
-                <MLabel>Trimming X / Y / Z</MLabel>
-                <div style={{ display:"flex", gap:4 }}>
-                  <NInput value={settings.trimming.x} min={0}
-                    onChange={(v) => onSettings({ ...settings, trimming:{...settings.trimming, x:v} })} center />
-                  <NInput value={settings.trimming.y} min={0}
-                    onChange={(v) => onSettings({ ...settings, trimming:{...settings.trimming, y:v} })} center />
-                  <NInput value={settings.trimming.z} min={0}
-                    onChange={(v) => onSettings({ ...settings, trimming:{...settings.trimming, z:v} })} center />
-                </div>
+            {/* [Fix 2] Kerf 100% 너비 → Trimming X/Y/Z 3열 그리드 — g2 제거 */}
+            <div style={{ marginBottom:8 }}>
+              <MLabel unit="mm">Kerf (톱날)</MLabel>
+              <NInput value={settings.kerf} min={0} step={0.5}
+                onChange={(v) => onSettings({ ...settings, kerf:v })} />
+            </div>
+            <div style={{ marginBottom:8 }}>
+              <MLabel>Trimming X / Y / Z</MLabel>
+              <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr 1fr", gap:6 }}>
+                <NInput value={settings.trimming.x} min={0}
+                  onChange={(v) => onSettings({ ...settings, trimming:{...settings.trimming, x:v} })} center />
+                <NInput value={settings.trimming.y} min={0}
+                  onChange={(v) => onSettings({ ...settings, trimming:{...settings.trimming, y:v} })} center />
+                <NInput value={settings.trimming.z} min={0}
+                  onChange={(v) => onSettings({ ...settings, trimming:{...settings.trimming, z:v} })} center />
               </div>
             </div>
             <div style={{ fontFamily:"var(--mono)", fontSize:9, color:"var(--text-dim)", lineHeight:1.55 }}>
