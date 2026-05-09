@@ -12,239 +12,363 @@
  */
 
 import { useState, useRef, useCallback, useMemo, Suspense } from "react";
-import { Canvas, useFrame, useThree } from "@react-three/fiber";
-import {
-  OrbitControls,
-  PerspectiveCamera,
-  Grid,
-  Html,
-  Environment,
-  useHelper,
-} from "@react-three/drei";
+import { Canvas, useFrame } from "@react-three/fiber";
+import { OrbitControls, PerspectiveCamera, Grid, Html, Environment } from "@react-three/drei";
 import * as THREE from "three";
+
+// ══════════════════════════════════════════════════════════════════
+// GLOBAL STYLES
+// ══════════════════════════════════════════════════════════════════
+
+const GLOBAL_CSS = `
+  @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;500;600;700&display=swap');
+
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  :root {
+    --bg:        #030814;
+    --panel:     rgba(6, 14, 32, 0.96);
+    --border:    rgba(74, 158, 255, 0.16);
+    --border-hi: rgba(74, 158, 255, 0.42);
+    --blue:      #4a9eff;
+    --blue-dim:  rgba(74, 158, 255, 0.10);
+    --text:      #c8d8f0;
+    --text-dim:  rgba(200, 216, 240, 0.42);
+    --red:       #f87171;
+    --green:     #4ade80;
+    --mono:      'JetBrains Mono', monospace;
+  }
+
+  body { background: var(--bg); overflow: hidden; }
+
+  ::-webkit-scrollbar { width: 3px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb { background: rgba(74,158,255,0.3); border-radius: 2px; }
+
+  @keyframes spin   { to { transform: rotate(360deg); } }
+  @keyframes fadeUp { from { opacity:0; transform:translateY(5px); } to { opacity:1; transform:none; } }
+
+  /* ── Input base ── */
+  .fi {
+    width: 100%;
+    background: rgba(0, 8, 22, 0.75);
+    border: 1px solid var(--border);
+    border-radius: 5px;
+    color: var(--text);
+    font-family: var(--mono);
+    font-size: 12px;
+    padding: 6px 9px;
+    outline: none;
+    transition: border-color 0.15s, box-shadow 0.15s;
+    -webkit-appearance: none;
+  }
+  .fi:focus {
+    border-color: var(--blue);
+    box-shadow: 0 0 0 2px rgba(74,158,255,0.1);
+  }
+  .fi::placeholder { color: var(--text-dim); }
+  .fi[type=number]::-webkit-inner-spin-button { opacity: 0.35; }
+
+  /* ── Checkbox ── */
+  .fc {
+    appearance: none;
+    width: 14px; height: 14px;
+    border: 1px solid var(--border-hi);
+    border-radius: 3px;
+    background: rgba(0,8,22,0.75);
+    cursor: pointer;
+    flex-shrink: 0;
+    position: relative;
+    transition: all 0.12s;
+    margin-top: 1px;
+  }
+  .fc:checked { background: var(--blue); border-color: var(--blue); }
+  .fc:checked::after {
+    content: '';
+    position: absolute;
+    left: 3px; top: 1px;
+    width: 5px; height: 8px;
+    border: 1.8px solid #03080e;
+    border-top: none; border-left: none;
+    transform: rotate(45deg);
+  }
+
+  /* ── Section label ── */
+  .slabel {
+    font-family: var(--mono);
+    font-size: 9px;
+    font-weight: 700;
+    letter-spacing: 0.16em;
+    text-transform: uppercase;
+    color: var(--blue);
+    margin-bottom: 8px;
+    display: flex;
+    align-items: center;
+    gap: 7px;
+  }
+  .slabel::after { content:''; flex:1; height:1px; background: var(--border); }
+
+  /* ── Card ── */
+  .card {
+    background: rgba(0, 8, 22, 0.52);
+    border: 1px solid var(--border);
+    border-radius: 7px;
+    padding: 10px 11px;
+    margin-bottom: 6px;
+    animation: fadeUp 0.18s ease;
+    transition: border-color 0.15s;
+  }
+  .card:hover { border-color: rgba(74,158,255,0.3); }
+
+  /* ── Grid layouts ── */
+  .g2 { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+  .g4 { display: grid; grid-template-columns: 1fr 1fr 1fr 1fr; gap: 4px; }
+
+  /* ── Micro label ── */
+  .mlabel {
+    font-family: var(--mono);
+    font-size: 8px;
+    letter-spacing: 0.07em;
+    color: var(--text-dim);
+    margin-bottom: 3px;
+  }
+  .mlabel .u { color: rgba(74,158,255,0.7); margin-left: 2px; }
+
+  /* ── Delete button ── */
+  .del {
+    background: rgba(248,113,113,0.07);
+    border: 1px solid rgba(248,113,113,0.18);
+    border-radius: 4px;
+    color: var(--red);
+    font-size: 11px;
+    width: 22px; height: 22px;
+    cursor: pointer;
+    display: flex; align-items: center; justify-content: center;
+    flex-shrink: 0;
+    transition: all 0.12s;
+    font-family: var(--mono);
+    line-height: 1;
+  }
+  .del:hover { background: rgba(248,113,113,0.16); border-color: rgba(248,113,113,0.45); }
+
+  /* ── Add button ── */
+  .add {
+    width: 100%;
+    padding: 8px 0;
+    background: var(--blue-dim);
+    border: 1px dashed rgba(74,158,255,0.35);
+    border-radius: 6px;
+    color: var(--blue);
+    font-family: var(--mono);
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.05em;
+    cursor: pointer;
+    transition: all 0.14s;
+  }
+  .add:hover { background: rgba(74,158,255,0.18); border-color: var(--blue); }
+
+  /* ── Tag badge ── */
+  .tag {
+    display: inline-flex; align-items: center;
+    padding: 1px 6px;
+    border-radius: 3px;
+    font-size: 9px;
+    font-weight: 600;
+    letter-spacing: 0.07em;
+    font-family: var(--mono);
+  }
+  .tb { background: rgba(74,158,255,0.1); color:var(--blue); border:1px solid rgba(74,158,255,0.22); }
+  .tg { background: rgba(74,222,128,0.08); color:var(--green); border:1px solid rgba(74,222,128,0.22); }
+
+  /* ── Optimize button ── */
+  .opt {
+    width: 100%;
+    padding: 13px 0;
+    background: linear-gradient(135deg, #1560c8 0%, #0c3d8a 100%);
+    border: 1px solid rgba(74,158,255,0.55);
+    border-radius: 8px;
+    color: #e8f0fe;
+    font-family: var(--mono);
+    font-size: 13px;
+    font-weight: 700;
+    letter-spacing: 0.09em;
+    cursor: pointer;
+    transition: all 0.16s;
+    position: relative;
+    overflow: hidden;
+    box-shadow: 0 3px 18px rgba(21,96,200,0.32);
+  }
+  .opt::before {
+    content:'';
+    position:absolute; inset:0;
+    background: linear-gradient(135deg, rgba(255,255,255,0.07) 0%, transparent 55%);
+    pointer-events:none;
+  }
+  .opt:hover:not(:disabled) {
+    background: linear-gradient(135deg, #1a70e0 0%, #1050b0 100%);
+    box-shadow: 0 4px 26px rgba(74,158,255,0.4);
+    transform: translateY(-1px);
+  }
+  .opt:active:not(:disabled) { transform: translateY(0); }
+  .opt:disabled {
+    background: rgba(74,158,255,0.08);
+    border-color: rgba(74,158,255,0.18);
+    color: rgba(74,158,255,0.35);
+    cursor: not-allowed;
+    box-shadow: none;
+  }
+`;
 
 // ══════════════════════════════════════════════════════════════════
 // 1. 상수 & 유틸리티
 // ══════════════════════════════════════════════════════════════════
 
-const API_URL = "https://cutting-optimizer-backend.onrender.com/optimize";
-
-/** Part ID → 결정론적 색상 (HSL 골든 앵글 분산) */
-function partColor(partId, allPartIds) {
-  const idx = allPartIds.indexOf(partId);
-  const hue = (idx * 137.508) % 360; // 황금각
-  return `hsl(${hue}, 72%, 58%)`;
-}
-
-/** Three.js Color 객체로 변환 */
-function hslToThreeColor(hslStr) {
-  const c = new THREE.Color();
-  c.setStyle(hslStr);
-  return c;
-}
-
-/**
- * 스케일 팩터: Three.js scene 단위와 mm 단위 맞춤
- * 2440mm 원장이 scene에서 약 2.44 unit이 되도록
- */
-const SCALE = 0.001;
-
-/** 원장 간 오프셋 (scene unit) */
+const API_URL   = "https://cutting-optimizer-backend.onrender.com/optimize";
+const SCALE     = 0.001;
 const STOCK_GAP = 0.4;
 
-// ══════════════════════════════════════════════════════════════════
-// 2. 기본 Request 데이터 (Swagger 예시와 동일)
-// ══════════════════════════════════════════════════════════════════
+let _uid = 0;
+const uid = () => `u${++_uid}`;
 
-const DEFAULT_REQUEST = {
-  settings: {
-    kerf: 3.0,
-    trimming: { x: 10, y: 10, z: 0 },
-    optimization_goal: "MINIMIZE_WASTE",
-  },
-  stocks: [{ id: "S1", l: 2440, w: 1220, t: 18, qty: 3 }],
-  parts: [
-    { id: "P1", l: 600, w: 400, t: 18, qty: 10, lock_z: true, allow_xy_rotation: true, priority: 0 },
-    { id: "P2", l: 300, w: 200, t: 18, qty: 8,  lock_z: true, allow_xy_rotation: true, priority: 1 },
-    { id: "P3", l: 800, w: 600, t: 18, qty: 3,  lock_z: true, allow_xy_rotation: false, priority: 2 },
-  ],
-};
+function partColor(partId, allPartIds) {
+  const idx = allPartIds.indexOf(partId);
+  const hue = (idx * 137.508) % 360;
+  return `hsl(${hue}, 70%, 58%)`;
+}
+
+function toThreeColor(hsl) {
+  return new THREE.Color().setStyle(hsl);
+}
 
 // ══════════════════════════════════════════════════════════════════
-// 3. 응답 데이터를 3D 배치 데이터로 변환
-//    각 Stock ID별로 그룹핑 후 offset 부여
+// 2. 기본 상태
+// ══════════════════════════════════════════════════════════════════
+
+const DEFAULT_SETTINGS = { kerf: 3.0, trimming: { x: 10, y: 10, z: 0 } };
+
+const DEFAULT_STOCKS = [
+  { _uid: "s1", id: "S1", l: 2440, w: 1220, t: 18, qty: 3 },
+];
+
+const DEFAULT_PARTS = [
+  { _uid: "p1", id: "P1", l: 600, w: 400, t: 18, qty: 10, lock_z: true,  allow_xy_rotation: true  },
+  { _uid: "p2", id: "P2", l: 300, w: 200, t: 18, qty: 8,  lock_z: true,  allow_xy_rotation: true  },
+  { _uid: "p3", id: "P3", l: 800, w: 600, t: 18, qty: 3,  lock_z: true,  allow_xy_rotation: false },
+];
+
+// ══════════════════════════════════════════════════════════════════
+// 3. buildSceneData
 // ══════════════════════════════════════════════════════════════════
 
 function buildSceneData(response, stocks) {
-  if (!response?.placements) return { groups: [], stockMeshes: [] };
+  if (!response?.placements) return { groups: [], allPartIds: [] };
 
-  // stock_id → index 매핑 (배치 순서 보존)
   const stockOrder = [];
   response.placements.forEach((p) => {
     if (!stockOrder.includes(p.stock_id)) stockOrder.push(p.stock_id);
   });
 
-  // 원장 치수 맵 (stock_summaries 활용)
-  const stockDimsMap = {};
-  (response.stock_summaries || []).forEach((s) => {
-    stockDimsMap[s.stock_id] = s.usable_dims;
-  });
-
-  // stocks input에서 원본 치수 보완
-  stocks.forEach((s) => {
-    if (!stockDimsMap[s.id]) {
-      stockDimsMap[s.id] = { l: s.l, w: s.w, t: s.t };
-    }
-  });
+  const dimsMap = {};
+  (response.stock_summaries || []).forEach((s) => { dimsMap[s.stock_id] = s.usable_dims; });
+  stocks.forEach((s) => { if (!dimsMap[s.id]) dimsMap[s.id] = { l: s.l, w: s.w, t: s.t }; });
 
   const allPartIds = [...new Set(response.placements.map((p) => p.part_id))];
 
-  // 각 Stock 그룹에 Z 오프셋 부여
-  const groups = stockOrder.map((stockId, stockIdx) => {
-    const placements = response.placements.filter(
-      (p) => p.stock_id === stockId
-    );
+  const groups = stockOrder.map((stockId, si) => {
+    const pls = response.placements.filter((p) => p.stock_id === stockId);
 
-    // 이전 원장들의 두께 + 간격을 누적한 Z 오프셋 계산
-    let zOffset = 0;
-    for (let i = 0; i < stockIdx; i++) {
-      const prevId = stockOrder[i];
-      const prevDims = stockDimsMap[prevId] || { t: 18 };
-      zOffset += prevDims.t * SCALE + STOCK_GAP;
+    let zOff = 0;
+    for (let i = 0; i < si; i++) {
+      const d = dimsMap[stockOrder[i]] || { t: 18 };
+      zOff += d.t * SCALE + STOCK_GAP;
     }
 
-    const boxes = placements.map((p) => ({
-      nodeId: p.node_id,
-      partId: p.part_id,
-      // Three.js BoxGeometry는 중심 기준 → origin + dims/2 로 center 계산
+    const boxes = pls.map((p) => ({
+      nodeId:   p.node_id,
+      partId:   p.part_id,
       position: [
         (p.origin.x + p.placed_dims.l / 2) * SCALE,
         (p.origin.y + p.placed_dims.w / 2) * SCALE,
-        (p.origin.z + p.placed_dims.t / 2) * SCALE + zOffset,
+        (p.origin.z + p.placed_dims.t / 2) * SCALE + zOff,
       ],
-      size: [
-        p.placed_dims.l * SCALE,
-        p.placed_dims.w * SCALE,
-        p.placed_dims.t * SCALE,
-      ],
-      color: hslToThreeColor(partColor(p.part_id, allPartIds)),
-      hsl: partColor(p.part_id, allPartIds),
-      label: `${p.part_id}  ${p.placed_dims.l}×${p.placed_dims.w}×${p.placed_dims.t}mm`,
-      cutSteps: p.cut_history?.length ?? 0,
+      size:     [p.placed_dims.l * SCALE, p.placed_dims.w * SCALE, p.placed_dims.t * SCALE],
+      color:    toThreeColor(partColor(p.part_id, allPartIds)),
+      hsl:      partColor(p.part_id, allPartIds),
+      label:    `${p.part_id}  ${p.placed_dims.l}×${p.placed_dims.w}×${p.placed_dims.t}mm`,
+      cuts:     p.cut_history?.length ?? 0,
     }));
 
-    // 원장 윤곽선 박스
-    const dims = stockDimsMap[stockId] || { l: 2440, w: 1220, t: 18 };
+    const d = dimsMap[stockId] || { l: 2440, w: 1220, t: 18 };
     const stockMesh = {
-      stockId,
-      zOffset,
-      position: [
-        (dims.l / 2) * SCALE,
-        (dims.w / 2) * SCALE,
-        (dims.t / 2) * SCALE + zOffset,
-      ],
-      size: [dims.l * SCALE, dims.w * SCALE, dims.t * SCALE],
+      stockId, zOff,
+      position: [(d.l / 2) * SCALE, (d.w / 2) * SCALE, (d.t / 2) * SCALE + zOff],
+      size:     [d.l * SCALE, d.w * SCALE, d.t * SCALE],
     };
 
-    return { stockId, stockIdx, zOffset, boxes, stockMesh };
+    return { stockId, boxes, stockMesh };
   });
 
   return { groups, allPartIds };
 }
 
 // ══════════════════════════════════════════════════════════════════
-// 4. 개별 배치 박스 컴포넌트 (Hover 툴팁 포함)
+// 4. 3D 컴포넌트 (기존 로직 완전 유지)
 // ══════════════════════════════════════════════════════════════════
 
 function PlacedBox({ box, onHover }) {
-  const meshRef = useRef();
+  const ref = useRef();
   const [hovered, setHovered] = useState(false);
 
   useFrame(() => {
-    if (!meshRef.current) return;
-    // Hover 시 살짝 밝아지는 emissive 애니메이션
-    const target = hovered ? 0.18 : 0.0;
-    meshRef.current.material.emissiveIntensity = THREE.MathUtils.lerp(
-      meshRef.current.material.emissiveIntensity,
-      target,
-      0.12
+    if (!ref.current) return;
+    ref.current.material.emissiveIntensity = THREE.MathUtils.lerp(
+      ref.current.material.emissiveIntensity, hovered ? 0.18 : 0, 0.12
     );
   });
 
   return (
     <mesh
-      ref={meshRef}
+      ref={ref}
       position={box.position}
-      onPointerOver={(e) => {
-        e.stopPropagation();
-        setHovered(true);
-        onHover(box);
-        document.body.style.cursor = "pointer";
-      }}
-      onPointerOut={() => {
-        setHovered(false);
-        onHover(null);
-        document.body.style.cursor = "auto";
-      }}
+      onPointerOver={(e) => { e.stopPropagation(); setHovered(true); onHover(box); document.body.style.cursor = "pointer"; }}
+      onPointerOut={() => { setHovered(false); onHover(null); document.body.style.cursor = "auto"; }}
     >
       <boxGeometry args={box.size} />
       <meshStandardMaterial
-        color={box.color}
-        emissive={box.color}
-        emissiveIntensity={0}
-        roughness={0.35}
-        metalness={0.08}
-        transparent
-        opacity={0.92}
+        color={box.color} emissive={box.color} emissiveIntensity={0}
+        roughness={0.35} metalness={0.08} transparent opacity={0.92}
       />
     </mesh>
   );
 }
 
-/** 박스 외곽선 (EdgeGeometry) */
-function BoxEdges({ box, hovered }) {
-  const color = hovered ? "#ffffff" : "#00000033";
+function BoxEdges({ box, hi }) {
   return (
     <lineSegments position={box.position}>
       <edgesGeometry args={[new THREE.BoxGeometry(...box.size)]} />
-      <lineBasicMaterial color={color} transparent opacity={hovered ? 0.9 : 0.3} />
+      <lineBasicMaterial color={hi ? "#ffffff" : "#00000033"} transparent opacity={hi ? 0.9 : 0.28} />
     </lineSegments>
   );
 }
 
-/** 원장 윤곽선 (점선 느낌의 EdgesGeometry) */
-function StockOutline({ stockMesh, label }) {
+function StockOutline({ sm, label }) {
   return (
     <group>
-      <lineSegments position={stockMesh.position}>
-        <edgesGeometry
-          args={[new THREE.BoxGeometry(...stockMesh.size)]}
-        />
-        <lineBasicMaterial color="#4a9eff" transparent opacity={0.5} />
+      <lineSegments position={sm.position}>
+        <edgesGeometry args={[new THREE.BoxGeometry(...sm.size)]} />
+        <lineBasicMaterial color="#4a9eff" transparent opacity={0.45} />
       </lineSegments>
-      {/* 원장 레이블 */}
       <Html
-        position={[
-          stockMesh.position[0] - stockMesh.size[0] / 2,
-          stockMesh.position[1] + stockMesh.size[1] / 2 + 0.05,
-          stockMesh.position[2],
-        ]}
+        position={[sm.position[0] - sm.size[0] / 2, sm.position[1] + sm.size[1] / 2 + 0.06, sm.position[2]]}
         style={{ pointerEvents: "none" }}
       >
-        <div
-          style={{
-            background: "rgba(10,20,40,0.82)",
-            color: "#4a9eff",
-            fontFamily: "'JetBrains Mono', monospace",
-            fontSize: "11px",
-            fontWeight: 600,
-            padding: "3px 8px",
-            borderRadius: "4px",
-            border: "1px solid rgba(74,158,255,0.4)",
-            whiteSpace: "nowrap",
-            letterSpacing: "0.05em",
-          }}
-        >
+        <div style={{
+          background: "rgba(10,20,42,0.88)", color: "#4a9eff",
+          fontFamily: "var(--mono)", fontSize: "11px", fontWeight: 600,
+          padding: "3px 8px", borderRadius: "4px",
+          border: "1px solid rgba(74,158,255,0.38)", whiteSpace: "nowrap",
+        }}>
           {label}
         </div>
       </Html>
@@ -252,113 +376,60 @@ function StockOutline({ stockMesh, label }) {
   );
 }
 
-// ══════════════════════════════════════════════════════════════════
-// 5. 3D 씬 전체 컴포넌트
-// ══════════════════════════════════════════════════════════════════
-
 function Scene({ sceneData }) {
-  const [hoveredBox, setHoveredBox] = useState(null);
+  const [hov, setHov] = useState(null);
   const { groups } = sceneData;
 
-  // 전체 씬의 중심을 계산해 카메라가 중앙을 바라보게
-  const sceneCenter = useMemo(() => {
-    if (!groups.length) return [1.22, 0.61, 0];
-    const allBoxes = groups.flatMap((g) => g.boxes);
-    if (!allBoxes.length) return [1.22, 0.61, 0];
-    const avgX = allBoxes.reduce((s, b) => s + b.position[0], 0) / allBoxes.length;
-    const avgY = allBoxes.reduce((s, b) => s + b.position[1], 0) / allBoxes.length;
-    const avgZ = allBoxes.reduce((s, b) => s + b.position[2], 0) / allBoxes.length;
-    return [avgX, avgY, avgZ];
+  const center = useMemo(() => {
+    const all = groups.flatMap((g) => g.boxes);
+    if (!all.length) return [1.22, 0.61, 0];
+    return [
+      all.reduce((s, b) => s + b.position[0], 0) / all.length,
+      all.reduce((s, b) => s + b.position[1], 0) / all.length,
+      all.reduce((s, b) => s + b.position[2], 0) / all.length,
+    ];
   }, [groups]);
 
   return (
     <>
-      {/* 카메라 */}
       <PerspectiveCamera makeDefault position={[4, 3, 5]} fov={45} />
-      <OrbitControls
-        target={sceneCenter}
-        enableDamping
-        dampingFactor={0.06}
-        minDistance={0.5}
-        maxDistance={20}
-      />
-
-      {/* 조명 */}
+      <OrbitControls target={center} enableDamping dampingFactor={0.06} minDistance={0.5} maxDistance={20} />
       <ambientLight intensity={0.6} />
-      <directionalLight
-        position={[5, 8, 5]}
-        intensity={1.4}
-        castShadow
-        shadow-mapSize={[2048, 2048]}
-      />
+      <directionalLight position={[5, 8, 5]} intensity={1.4} castShadow shadow-mapSize={[2048, 2048]} />
       <directionalLight position={[-4, 3, -4]} intensity={0.4} color="#b0c8ff" />
-      <pointLight position={[0, 6, 0]} intensity={0.3} color="#ffffff" />
-
-      {/* 환경 반사 */}
       <Environment preset="city" />
-
-      {/* 그리드 바닥 */}
       <Grid
-        args={[20, 20]}
-        position={[sceneCenter[0], -0.01, sceneCenter[2]]}
-        cellSize={0.244}
-        cellThickness={0.5}
-        cellColor="#1e3a5f"
-        sectionSize={2.44}
-        sectionThickness={1}
-        sectionColor="#2a5a8f"
-        fadeDistance={15}
-        fadeStrength={1}
-        followCamera={false}
-        infiniteGrid
+        args={[20, 20]} position={[center[0], -0.01, center[2]]}
+        cellSize={0.244} cellThickness={0.5} cellColor="#1a3558"
+        sectionSize={2.44} sectionThickness={1} sectionColor="#254d80"
+        fadeDistance={15} fadeStrength={1} followCamera={false} infiniteGrid
       />
 
-      {/* 원장 그룹별 렌더링 */}
-      {groups.map((group) => (
-        <group key={group.stockId}>
-          {/* 원장 윤곽선 */}
-          <StockOutline
-            stockMesh={group.stockMesh}
-            label={`Stock: ${group.stockId}  (${group.boxes.length} parts)`}
-          />
-
-          {/* 배치 박스들 */}
-          {group.boxes.map((box) => (
+      {groups.map((g) => (
+        <group key={g.stockId}>
+          <StockOutline sm={g.stockMesh} label={`Stock: ${g.stockId}  (${g.boxes.length} parts)`} />
+          {g.boxes.map((box) => (
             <group key={box.nodeId}>
-              <PlacedBox
-                box={box}
-                onHover={setHoveredBox}
-              />
-              <BoxEdges box={box} hovered={hoveredBox?.nodeId === box.nodeId} />
+              <PlacedBox box={box} onHover={setHov} />
+              <BoxEdges box={box} hi={hov?.nodeId === box.nodeId} />
             </group>
           ))}
         </group>
       ))}
 
-      {/* 호버 툴팁 (3D Html 오버레이) */}
-      {hoveredBox && (
-        <Html position={hoveredBox.position} style={{ pointerEvents: "none" }}>
-          <div
-            style={{
-              background: "rgba(5,15,30,0.95)",
-              border: `1px solid ${hoveredBox.hsl}`,
-              borderRadius: "6px",
-              padding: "8px 12px",
-              fontFamily: "'JetBrains Mono', monospace",
-              fontSize: "12px",
-              color: "#e8f0fe",
-              whiteSpace: "nowrap",
-              boxShadow: `0 0 12px ${hoveredBox.hsl}55`,
-              transform: "translate(12px, -50%)",
-            }}
-          >
-            <div style={{ color: hoveredBox.hsl, fontWeight: 700, marginBottom: 4 }}>
-              {hoveredBox.partId}
-            </div>
-            <div style={{ opacity: 0.8 }}>{hoveredBox.label}</div>
-            <div style={{ opacity: 0.5, fontSize: 10, marginTop: 4 }}>
-              {hoveredBox.cutSteps} cuts · node {hoveredBox.nodeId}
-            </div>
+      {hov && (
+        <Html position={hov.position} style={{ pointerEvents: "none" }}>
+          <div style={{
+            background: "rgba(4,12,28,0.96)",
+            border: `1px solid ${hov.hsl}`,
+            borderRadius: 6, padding: "8px 12px",
+            fontFamily: "var(--mono)", fontSize: 12, color: "#e8f0fe",
+            whiteSpace: "nowrap", transform: "translate(14px,-50%)",
+            boxShadow: `0 0 14px ${hov.hsl}44`,
+          }}>
+            <div style={{ color: hov.hsl, fontWeight: 700, marginBottom: 4 }}>{hov.partId}</div>
+            <div style={{ opacity: 0.8 }}>{hov.label}</div>
+            <div style={{ opacity: 0.45, fontSize: 10, marginTop: 4 }}>{hov.cuts} cuts · {hov.nodeId}</div>
           </div>
         </Html>
       )}
@@ -367,365 +438,392 @@ function Scene({ sceneData }) {
 }
 
 // ══════════════════════════════════════════════════════════════════
-// 6. 범례 (Legend) 패널
+// 5. Legend (뷰어 우하단)
 // ══════════════════════════════════════════════════════════════════
 
 function Legend({ allPartIds, stats }) {
   return (
-    <div
-      style={{
-        position: "absolute",
-        bottom: 24,
-        left: 24,
-        background: "rgba(5,12,28,0.88)",
-        border: "1px solid rgba(74,158,255,0.25)",
-        borderRadius: 10,
-        padding: "14px 18px",
-        fontFamily: "'JetBrains Mono', monospace",
-        fontSize: 12,
-        color: "#c8d8f0",
-        backdropFilter: "blur(8px)",
-        maxWidth: 240,
-      }}
-    >
-      <div
-        style={{
-          fontSize: 10,
-          letterSpacing: "0.12em",
-          color: "#4a9eff",
-          marginBottom: 10,
-          textTransform: "uppercase",
-        }}
-      >
-        Part Legend
+    <div style={{
+      position: "absolute", bottom: 20, right: 20, zIndex: 5,
+      background: "rgba(5,12,28,0.9)", border: "1px solid var(--border)",
+      borderRadius: 9, padding: "13px 15px",
+      fontFamily: "var(--mono)", fontSize: 12, color: "var(--text)",
+      backdropFilter: "blur(10px)", maxWidth: 200,
+    }}>
+      <div style={{ fontSize: 9, letterSpacing: "0.14em", color: "var(--blue)", marginBottom: 9, fontWeight: 700 }}>
+        PART LEGEND
       </div>
-      {allPartIds.map((pid, i) => (
-        <div
-          key={pid}
-          style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}
-        >
-          <div
-            style={{
-              width: 12,
-              height: 12,
-              borderRadius: 3,
-              background: partColor(pid, allPartIds),
-              flexShrink: 0,
-            }}
-          />
-          <span style={{ opacity: 0.9 }}>{pid}</span>
+      {allPartIds.map((pid) => (
+        <div key={pid} style={{ display: "flex", alignItems: "center", gap: 7, marginBottom: 5 }}>
+          <div style={{ width: 10, height: 10, borderRadius: 2, background: partColor(pid, allPartIds), flexShrink: 0 }} />
+          <span style={{ opacity: 0.85, fontSize: 11 }}>{pid}</span>
         </div>
       ))}
-
       {stats && (
-        <div
-          style={{
-            marginTop: 14,
-            paddingTop: 12,
-            borderTop: "1px solid rgba(74,158,255,0.2)",
-          }}
-        >
-          <StatRow label="Placed" value={stats.total_placed} />
-          <StatRow label="Stocks used" value={stats.stocks_used} />
-          <StatRow
-            label="Efficiency"
-            value={`${stats.overall_efficiency_pct}%`}
-            highlight={stats.overall_efficiency_pct >= 85}
-          />
-          <StatRow
-            label="Compute"
-            value={`${(stats.processing_time_sec * 1000).toFixed(1)}ms`}
-          />
-        </div>
-      )}
-    </div>
-  );
-}
-
-function StatRow({ label, value, highlight }) {
-  return (
-    <div
-      style={{
-        display: "flex",
-        justifyContent: "space-between",
-        gap: 16,
-        marginBottom: 5,
-        fontSize: 11,
-      }}
-    >
-      <span style={{ opacity: 0.55 }}>{label}</span>
-      <span style={{ color: highlight ? "#4ade80" : "#e8f0fe", fontWeight: 600 }}>
-        {value}
-      </span>
-    </div>
-  );
-}
-
-// ══════════════════════════════════════════════════════════════════
-// 7. JSON 편집기 패널
-// ══════════════════════════════════════════════════════════════════
-
-function RequestEditor({ value, onChange, onRun, loading, error }) {
-  const [open, setOpen] = useState(false);
-  const [localText, setLocalText] = useState(
-    JSON.stringify(value, null, 2)
-  );
-  const [parseError, setParseError] = useState(null);
-
-  const handleChange = (e) => {
-    setLocalText(e.target.value);
-    try {
-      const parsed = JSON.parse(e.target.value);
-      setParseError(null);
-      onChange(parsed);
-    } catch {
-      setParseError("JSON 파싱 오류");
-    }
-  };
-
-  return (
-    <div
-      style={{
-        position: "absolute",
-        top: 24,
-        right: 24,
-        width: open ? 380 : 180,
-        background: "rgba(5,12,28,0.92)",
-        border: "1px solid rgba(74,158,255,0.25)",
-        borderRadius: 10,
-        overflow: "hidden",
-        fontFamily: "'JetBrains Mono', monospace",
-        backdropFilter: "blur(8px)",
-        transition: "width 0.25s ease",
-      }}
-    >
-      {/* 헤더 */}
-      <div
-        style={{
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "space-between",
-          padding: "10px 14px",
-          borderBottom: open ? "1px solid rgba(74,158,255,0.2)" : "none",
-          cursor: "pointer",
-        }}
-        onClick={() => setOpen((o) => !o)}
-      >
-        <span style={{ fontSize: 11, color: "#4a9eff", letterSpacing: "0.1em" }}>
-          REQUEST EDITOR
-        </span>
-        <span style={{ color: "#4a9eff", fontSize: 14 }}>{open ? "▲" : "▼"}</span>
-      </div>
-
-      {open && (
-        <div style={{ padding: "10px 14px 14px" }}>
-          <textarea
-            value={localText}
-            onChange={handleChange}
-            spellCheck={false}
-            style={{
-              width: "100%",
-              height: 280,
-              background: "rgba(0,10,25,0.7)",
-              border: `1px solid ${parseError ? "#f87171" : "rgba(74,158,255,0.2)"}`,
-              borderRadius: 6,
-              color: "#c8d8f0",
-              fontFamily: "'JetBrains Mono', monospace",
-              fontSize: 11,
-              padding: "8px",
-              resize: "vertical",
-              outline: "none",
-              lineHeight: 1.5,
-              boxSizing: "border-box",
-            }}
-          />
-          {parseError && (
-            <div style={{ color: "#f87171", fontSize: 10, marginTop: 4 }}>
-              {parseError}
+        <div style={{ marginTop: 11, paddingTop: 9, borderTop: "1px solid var(--border)" }}>
+          {[["배치", stats.total_placed + "개"], ["효율", stats.overall_efficiency_pct + "%", stats.overall_efficiency_pct >= 85], ["원장", stats.stocks_used + "장"]].map(([l, v, hi]) => (
+            <div key={l} style={{ display: "flex", justifyContent: "space-between", gap: 12, marginBottom: 4, fontSize: 11 }}>
+              <span style={{ opacity: 0.5 }}>{l}</span>
+              <span style={{ color: hi ? "var(--green)" : "var(--text)", fontWeight: 600 }}>{v}</span>
             </div>
-          )}
+          ))}
         </div>
       )}
-
-      {/* 실행 버튼 */}
-      <div style={{ padding: "0 14px 14px" }}>
-        <button
-          onClick={onRun}
-          disabled={loading || !!parseError}
-          style={{
-            width: "100%",
-            padding: "9px 0",
-            background: loading
-              ? "rgba(74,158,255,0.15)"
-              : "linear-gradient(135deg, #1a6bcc, #0f4a99)",
-            border: "1px solid rgba(74,158,255,0.5)",
-            borderRadius: 6,
-            color: loading ? "#4a9eff99" : "#e8f0fe",
-            fontFamily: "'JetBrains Mono', monospace",
-            fontSize: 12,
-            fontWeight: 700,
-            letterSpacing: "0.08em",
-            cursor: loading ? "not-allowed" : "pointer",
-            transition: "all 0.15s",
-          }}
-        >
-          {loading ? "▶ COMPUTING..." : "▶ OPTIMIZE"}
-        </button>
-
-        {error && (
-          <div
-            style={{
-              marginTop: 8,
-              padding: "6px 8px",
-              background: "rgba(248,113,113,0.1)",
-              border: "1px solid rgba(248,113,113,0.3)",
-              borderRadius: 4,
-              color: "#f87171",
-              fontSize: 10,
-              lineHeight: 1.4,
-            }}
-          >
-            {error}
-          </div>
-        )}
-      </div>
     </div>
   );
 }
 
 // ══════════════════════════════════════════════════════════════════
-// 8. 타이틀 & 카메라 안내
+// 6. 뷰어 힌트 & 오버레이
 // ══════════════════════════════════════════════════════════════════
 
-function HUD() {
+function ViewerHints() {
   return (
-    <>
-      {/* 타이틀 */}
-      <div
-        style={{
-          position: "absolute",
-          top: 24,
-          left: 24,
-          fontFamily: "'JetBrains Mono', monospace",
-        }}
-      >
-        <div
-          style={{
-            fontSize: 18,
-            fontWeight: 700,
-            color: "#e8f0fe",
-            letterSpacing: "-0.01em",
-          }}
-        >
-          3D Cut Optimizer
-        </div>
-        <div style={{ fontSize: 11, color: "#4a9eff", opacity: 0.7, marginTop: 2 }}>
-          Guillotine · Kerf · Trimming · OrientLock
-        </div>
-      </div>
-
-      {/* 조작 안내 */}
-      <div
-        style={{
-          position: "absolute",
-          bottom: 24,
-          right: 24,
-          fontFamily: "'JetBrains Mono', monospace",
-          fontSize: 10,
-          color: "#4a9eff",
-          opacity: 0.5,
-          lineHeight: 1.8,
-          textAlign: "right",
-        }}
-      >
-        <div>Drag · Rotate</div>
-        <div>Scroll · Zoom</div>
-        <div>Right-drag · Pan</div>
-      </div>
-    </>
+    <div style={{
+      position: "absolute", top: 14, right: 16, zIndex: 5,
+      fontFamily: "var(--mono)", fontSize: 9,
+      color: "var(--blue)", opacity: 0.4, lineHeight: 2, textAlign: "right",
+    }}>
+      <div>Drag · Rotate</div><div>Scroll · Zoom</div><div>Right-drag · Pan</div>
+    </div>
   );
 }
-
-// ══════════════════════════════════════════════════════════════════
-// 9. 로딩 오버레이
-// ══════════════════════════════════════════════════════════════════
 
 function LoadingOverlay() {
   return (
-    <div
-      style={{
-        position: "absolute",
-        inset: 0,
-        display: "flex",
-        flexDirection: "column",
-        alignItems: "center",
-        justifyContent: "center",
-        background: "rgba(3,8,20,0.7)",
-        backdropFilter: "blur(4px)",
-        fontFamily: "'JetBrains Mono', monospace",
-        color: "#4a9eff",
-        gap: 16,
-        zIndex: 10,
-      }}
-    >
-      <div
-        style={{
-          width: 40,
-          height: 40,
-          border: "3px solid rgba(74,158,255,0.2)",
-          borderTop: "3px solid #4a9eff",
-          borderRadius: "50%",
-          animation: "spin 0.8s linear infinite",
-        }}
-      />
-      <div style={{ fontSize: 13, letterSpacing: "0.1em" }}>
-        COMPUTING LAYOUT...
-      </div>
-      <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
+    <div style={{
+      position: "absolute", inset: 0, zIndex: 10,
+      display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center",
+      background: "rgba(3,8,20,0.72)", backdropFilter: "blur(4px)",
+      fontFamily: "var(--mono)", color: "var(--blue)", gap: 16,
+    }}>
+      <div style={{
+        width: 38, height: 38,
+        border: "3px solid rgba(74,158,255,0.15)", borderTop: "3px solid var(--blue)",
+        borderRadius: "50%", animation: "spin 0.8s linear infinite",
+      }} />
+      <div style={{ fontSize: 12, letterSpacing: "0.1em" }}>COMPUTING LAYOUT...</div>
     </div>
   );
 }
-
-// ══════════════════════════════════════════════════════════════════
-// 10. Empty State
-// ══════════════════════════════════════════════════════════════════
 
 function EmptyState() {
   return (
-    <div
-      style={{
-        position: "absolute",
-        inset: 0,
-        display: "flex",
-        flexDirection: "column",
-        alignItems: "center",
-        justifyContent: "center",
-        fontFamily: "'JetBrains Mono', monospace",
-        color: "rgba(74,158,255,0.4)",
-        gap: 12,
-        pointerEvents: "none",
-      }}
-    >
-      <div style={{ fontSize: 40, opacity: 0.3 }}>⬛</div>
-      <div style={{ fontSize: 13, letterSpacing: "0.08em" }}>
-        OPTIMIZE를 눌러 결과를 시각화하세요
+    <div style={{
+      position: "absolute", inset: 0, zIndex: 2,
+      display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center",
+      fontFamily: "var(--mono)", color: "rgba(74,158,255,0.3)",
+      gap: 10, pointerEvents: "none",
+    }}>
+      <div style={{ fontSize: 34, opacity: 0.2 }}>⬛</div>
+      <div style={{ fontSize: 11, letterSpacing: "0.07em" }}>좌측 패널에서 데이터를 입력하고 OPTIMIZE를 누르세요</div>
+    </div>
+  );
+}
+
+// ══════════════════════════════════════════════════════════════════
+// 7. 폼 원자 컴포넌트
+// ══════════════════════════════════════════════════════════════════
+
+function SLabel({ children }) {
+  return <div className="slabel">{children}</div>;
+}
+
+function MLabel({ children, unit }) {
+  return (
+    <div className="mlabel">
+      {children}{unit && <span className="u">{unit}</span>}
+    </div>
+  );
+}
+
+function NInput({ value, onChange, min = 0, step = 1, center = false }) {
+  return (
+    <input
+      className="fi" type="number" min={min} step={step} value={value}
+      onChange={(e) => onChange(Number(e.target.value))}
+      style={{ padding: "5px 7px", ...(center ? { textAlign: "center" } : {}) }}
+    />
+  );
+}
+
+function Check({ label, hint, checked, onChange }) {
+  return (
+    <label style={{
+      display: "flex", alignItems: "flex-start", gap: 7, cursor: "pointer",
+      fontFamily: "var(--mono)", fontSize: 11, color: "var(--text)", lineHeight: 1.4,
+    }}>
+      <input className="fc" type="checkbox" checked={checked} onChange={(e) => onChange(e.target.checked)} />
+      <span>{label}<span style={{ color: "var(--text-dim)", fontSize: 9, marginLeft: 4 }}>{hint}</span></span>
+    </label>
+  );
+}
+
+// ══════════════════════════════════════════════════════════════════
+// 8. Stock 카드
+// ══════════════════════════════════════════════════════════════════
+
+function StockCard({ s, idx, onChange, onDel }) {
+  const u = (k, v) => onChange({ ...s, [k]: v });
+  return (
+    <div className="card">
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 8 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+          <div style={{
+            background: "rgba(74,158,255,0.1)", border: "1px solid rgba(74,158,255,0.3)",
+            borderRadius: 3, padding: "1px 7px",
+            fontFamily: "var(--mono)", fontSize: 10, fontWeight: 700, color: "var(--blue)",
+          }}>
+            {s.id || `S${idx + 1}`}
+          </div>
+          <input
+            className="fi" type="text" value={s.id}
+            onChange={(e) => u("id", e.target.value)}
+            placeholder="ID" style={{ width: 50, padding: "3px 7px", fontSize: 11 }}
+          />
+        </div>
+        <button className="del" onClick={onDel}>✕</button>
       </div>
-      <div style={{ fontSize: 10, opacity: 0.6 }}>
-        우측 상단 패널에서 Stock / Part 파라미터를 수정할 수 있습니다
+
+      <div className="g4" style={{ marginBottom: 0 }}>
+        {[["L", "l", "mm"], ["W", "w", "mm"], ["T", "t", "mm"], ["Qty", "qty", "장"]].map(([lbl, key, unit]) => (
+          <div key={key}>
+            <MLabel unit={unit}>{lbl}</MLabel>
+            <NInput value={s[key]} min={1} onChange={(v) => u(key, v)} center />
+          </div>
+        ))}
       </div>
     </div>
   );
 }
 
 // ══════════════════════════════════════════════════════════════════
-// 11. 메인 App 컴포넌트
+// 9. Part 카드
+// ══════════════════════════════════════════════════════════════════
+
+function PartCard({ p, idx, allIds, onChange, onDel }) {
+  const u = (k, v) => onChange({ ...p, [k]: v });
+  const dot = partColor(p.id, allIds);
+  return (
+    <div className="card">
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 8 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 7 }}>
+          <div style={{
+            width: 9, height: 9, borderRadius: 2, background: dot, flexShrink: 0,
+            boxShadow: `0 0 6px ${dot}99`,
+          }} />
+          <input
+            className="fi" type="text" value={p.id}
+            onChange={(e) => u("id", e.target.value)}
+            placeholder={`P${idx + 1}`} style={{ width: 50, padding: "3px 7px", fontSize: 11 }}
+          />
+          <span style={{ fontFamily: "var(--mono)", fontSize: 9, color: "var(--text-dim)" }}>×{p.qty}</span>
+        </div>
+        <button className="del" onClick={onDel}>✕</button>
+      </div>
+
+      <div className="g4" style={{ marginBottom: 8 }}>
+        {[["L", "l", "mm"], ["W", "w", "mm"], ["T", "t", "mm"], ["Qty", "qty", "개"]].map(([lbl, key, unit]) => (
+          <div key={key}>
+            <MLabel unit={unit}>{lbl}</MLabel>
+            <NInput value={p[key]} min={1} onChange={(v) => u(key, v)} center />
+          </div>
+        ))}
+      </div>
+
+      <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+        <Check label="Z축 고정" hint="(두께 방향 고정)" checked={p.lock_z} onChange={(v) => u("lock_z", v)} />
+        <Check label="XY 회전 허용" hint="(90° 전환)" checked={p.allow_xy_rotation} onChange={(v) => u("allow_xy_rotation", v)} />
+      </div>
+    </div>
+  );
+}
+
+// ══════════════════════════════════════════════════════════════════
+// 10. 좌측 입력 사이드바
+// ══════════════════════════════════════════════════════════════════
+
+function Sidebar({ settings, onSettings, stocks, onStocks, parts, onParts, onRun, loading, error, stats }) {
+  const addStock = () => {
+    const n = stocks.length + 1;
+    onStocks([...stocks, { _uid: uid(), id: `S${n}`, l: 2440, w: 1220, t: 18, qty: 1 }]);
+  };
+  const updStock = (id, v) => onStocks(stocks.map((s) => s._uid === id ? v : s));
+  const delStock = (id) => onStocks(stocks.filter((s) => s._uid !== id));
+
+  const addPart = () => {
+    const n = parts.length + 1;
+    onParts([...parts, { _uid: uid(), id: `P${n}`, l: 400, w: 300, t: 18, qty: 1, lock_z: true, allow_xy_rotation: true }]);
+  };
+  const updPart = (id, v) => onParts(parts.map((p) => p._uid === id ? v : p));
+  const delPart = (id) => onParts(parts.filter((p) => p._uid !== id));
+
+  const allIds = parts.map((p) => p.id);
+  const canRun = stocks.length > 0 && parts.length > 0 && !loading;
+
+  return (
+    <div style={{
+      width: 292, flexShrink: 0, height: "100vh",
+      display: "flex", flexDirection: "column",
+      background: "var(--panel)", borderRight: "1px solid var(--border)",
+      backdropFilter: "blur(20px)",
+    }}>
+
+      {/* ── 헤더 ─────────────────────────────────────────── */}
+      <div style={{ padding: "18px 18px 14px", borderBottom: "1px solid var(--border)", flexShrink: 0 }}>
+        <div style={{ fontFamily: "var(--mono)", fontSize: 15, fontWeight: 700, color: "#e8f0fe", letterSpacing: "-0.01em" }}>
+          3D Cut Optimizer
+        </div>
+        <div style={{ fontFamily: "var(--mono)", fontSize: 9, color: "var(--blue)", opacity: 0.65, marginTop: 3, letterSpacing: "0.1em" }}>
+          GUILLOTINE · KERF · TRIM · LOCK
+        </div>
+      </div>
+
+      {/* ── 스크롤 폼 영역 ──────────────────────────────── */}
+      <div style={{ flex: 1, overflowY: "auto", padding: "15px 15px 6px" }}>
+
+        {/* SETTINGS */}
+        <SLabel>Settings</SLabel>
+        <div className="card" style={{ marginBottom: 14 }}>
+          <div className="g2" style={{ marginBottom: 8 }}>
+            <div>
+              <MLabel unit="mm">Kerf (톱날)</MLabel>
+              <NInput value={settings.kerf} min={0} step={0.5}
+                onChange={(v) => onSettings({ ...settings, kerf: v })} />
+            </div>
+            <div>
+              <MLabel>Trimming X/Y</MLabel>
+              <div style={{ display: "flex", gap: 4 }}>
+                <NInput value={settings.trimming.x} min={0}
+                  onChange={(v) => onSettings({ ...settings, trimming: { ...settings.trimming, x: v } })} center />
+                <NInput value={settings.trimming.y} min={0}
+                  onChange={(v) => onSettings({ ...settings, trimming: { ...settings.trimming, y: v } })} center />
+              </div>
+            </div>
+          </div>
+          <div style={{ fontFamily: "var(--mono)", fontSize: 9, color: "var(--text-dim)", lineHeight: 1.5 }}>
+            Trimming은 원장 양단에서 각각 제거되는 여백(mm)입니다.
+          </div>
+        </div>
+
+        {/* STOCKS */}
+        <SLabel>
+          원장 (Stocks)
+          <span className="tag tb">{stocks.length}장</span>
+        </SLabel>
+        {stocks.map((s, i) => (
+          <StockCard key={s._uid} s={s} idx={i}
+            onChange={(v) => updStock(s._uid, v)}
+            onDel={() => delStock(s._uid)} />
+        ))}
+        <button className="add" onClick={addStock} style={{ marginBottom: 14 }}>
+          + 원장 추가
+        </button>
+
+        {/* PARTS */}
+        <SLabel>
+          부품 (Parts)
+          <span className="tag tb">{parts.length}종</span>
+          <span className="tag tg">{parts.reduce((s, p) => s + p.qty, 0)}개</span>
+        </SLabel>
+        {parts.map((p, i) => (
+          <PartCard key={p._uid} p={p} idx={i} allIds={allIds}
+            onChange={(v) => updPart(p._uid, v)}
+            onDel={() => delPart(p._uid)} />
+        ))}
+        <button className="add" onClick={addPart} style={{ marginBottom: 8 }}>
+          + 부품 추가
+        </button>
+      </div>
+
+      {/* ── 하단 고정 영역 ──────────────────────────────── */}
+      <div style={{
+        padding: "12px 15px 18px",
+        borderTop: "1px solid var(--border)",
+        flexShrink: 0,
+        background: "rgba(2,6,18,0.65)",
+      }}>
+
+        {/* 결과 요약 미니 카드 */}
+        {stats && (
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 5, marginBottom: 12 }}>
+            {[
+              ["배치 완료", `${stats.total_placed}개`],
+              ["효율",     `${stats.overall_efficiency_pct}%`, stats.overall_efficiency_pct >= 85],
+              ["원장 사용", `${stats.stocks_used}장`],
+              ["연산",     `${(stats.processing_time_sec * 1000).toFixed(0)}ms`],
+            ].map(([lbl, val, good]) => (
+              <div key={lbl} style={{
+                background: "rgba(0,8,22,0.6)", border: "1px solid var(--border)",
+                borderRadius: 6, padding: "7px 10px", fontFamily: "var(--mono)",
+              }}>
+                <div style={{ fontSize: 8, color: "var(--text-dim)", letterSpacing: "0.06em", marginBottom: 2 }}>{lbl}</div>
+                <div style={{ fontSize: 15, fontWeight: 700, color: good ? "var(--green)" : "var(--text)" }}>{val}</div>
+              </div>
+            ))}
+          </div>
+        )}
+
+        {/* 에러 */}
+        {error && (
+          <div style={{
+            marginBottom: 10, padding: "8px 10px",
+            background: "rgba(248,113,113,0.07)",
+            border: "1px solid rgba(248,113,113,0.22)",
+            borderRadius: 6, color: "var(--red)",
+            fontFamily: "var(--mono)", fontSize: 10, lineHeight: 1.5,
+          }}>
+            ⚠ {error}
+          </div>
+        )}
+
+        {/* OPTIMIZE 버튼 */}
+        <button className="opt" onClick={onRun} disabled={!canRun}>
+          {loading
+            ? <span style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 10 }}>
+                <span style={{
+                  display: "inline-block", width: 13, height: 13,
+                  border: "2px solid rgba(74,158,255,0.25)", borderTop: "2px solid var(--blue)",
+                  borderRadius: "50%", animation: "spin 0.8s linear infinite",
+                }} />
+                COMPUTING...
+              </span>
+            : "▶  OPTIMIZE  계산하기"
+          }
+        </button>
+
+        <div style={{
+          marginTop: 7, fontFamily: "var(--mono)", fontSize: 9,
+          color: "var(--text-dim)", textAlign: "center", lineHeight: 1.6,
+        }}>
+          {!canRun && !loading
+            ? "원장과 부품을 각 1개 이상 추가하세요"
+            : `원장 ${stocks.reduce((s, st) => s + st.qty, 0)}장 · 부품 ${parts.reduce((s, p) => s + p.qty, 0)}개 준비됨`
+          }
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ══════════════════════════════════════════════════════════════════
+// 11. 메인 App
 // ══════════════════════════════════════════════════════════════════
 
 export default function App() {
-  const [requestBody, setRequestBody] = useState(DEFAULT_REQUEST);
+  const [settings, setSettings] = useState(DEFAULT_SETTINGS);
+  const [stocks,   setStocks]   = useState(DEFAULT_STOCKS);
+  const [parts,    setParts]    = useState(DEFAULT_PARTS);
   const [response, setResponse] = useState(null);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState(null);
+  const [loading,  setLoading]  = useState(false);
+  const [error,    setError]    = useState(null);
+
+  // _uid 필드 제거 후 requestBody 조립
+  const requestBody = useMemo(() => ({
+    settings: { kerf: settings.kerf, trimming: settings.trimming, optimization_goal: "MINIMIZE_WASTE" },
+    stocks:   stocks.map(({ _uid, ...s }) => s),
+    parts:    parts.map(({ _uid, ...p }) => p),
+  }), [settings, stocks, parts]);
 
   // API 호출
   const handleOptimize = useCallback(async () => {
@@ -737,20 +835,15 @@ export default function App() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(requestBody),
       });
-
       if (!res.ok) {
-        const errData = await res.json().catch(() => ({}));
-        throw new Error(
-          errData.detail || errData.error || `HTTP ${res.status}`
-        );
+        const e = await res.json().catch(() => ({}));
+        throw new Error(e.detail || e.error || `HTTP ${res.status}`);
       }
-
-      const data = await res.json();
-      setResponse(data);
+      setResponse(await res.json());
     } catch (e) {
       setError(
         e.message.includes("Failed to fetch")
-          ? "서버에 연결할 수 없습니다. FastAPI 서버(localhost:8000)가 실행 중인지 확인하세요."
+          ? "FastAPI 서버(localhost:8000)에 연결할 수 없습니다."
           : e.message
       );
     } finally {
@@ -758,75 +851,61 @@ export default function App() {
     }
   }, [requestBody]);
 
-  // 3D 씬 데이터 계산
-  const sceneData = useMemo(
-    () => buildSceneData(response, requestBody.stocks),
-    [response, requestBody.stocks]
-  );
-
+  // 씬 데이터
+  const sceneData  = useMemo(() => buildSceneData(response, requestBody.stocks), [response, requestBody.stocks]);
   const allPartIds = sceneData.allPartIds ?? [];
-  const hasData = sceneData.groups?.length > 0;
+  const hasData    = (sceneData.groups?.length ?? 0) > 0;
 
   return (
-    <div
-      style={{
-        width: "100vw",
-        height: "100vh",
-        background: "#030814",
-        position: "relative",
-        overflow: "hidden",
-      }}
-    >
-      {/* Three.js Canvas */}
-      <Canvas
-        shadows
-        gl={{ antialias: true, toneMapping: THREE.ACESFilmicToneMapping }}
-        style={{ position: "absolute", inset: 0 }}
-      >
-        <color attach="background" args={["#030814"]} />
-        <fog attach="fog" args={["#030814", 10, 30]} />
+    <>
+      <style>{GLOBAL_CSS}</style>
 
-        <Suspense fallback={null}>
-          {hasData ? (
-            <Scene sceneData={sceneData} />
-          ) : (
-            /* 빈 상태에서도 OrbitControls + 카메라 유지 */
-            <>
-              <PerspectiveCamera makeDefault position={[4, 3, 5]} fov={45} />
-              <OrbitControls enableDamping dampingFactor={0.06} />
-              <ambientLight intensity={0.4} />
-              <Grid
-                args={[20, 20]}
-                position={[1.22, -0.01, 0]}
-                cellSize={0.244}
-                cellColor="#0e1f3d"
-                sectionSize={2.44}
-                sectionColor="#1a3a6a"
-                fadeDistance={15}
-                infiniteGrid
-              />
-            </>
-          )}
-        </Suspense>
-      </Canvas>
+      <div style={{ display: "flex", width: "100vw", height: "100vh", background: "var(--bg)", overflow: "hidden" }}>
 
-      {/* UI 오버레이 레이어 */}
-      <HUD />
+        {/* ── 좌측 입력 패널 ───────────────────── */}
+        <Sidebar
+          settings={settings}   onSettings={setSettings}
+          stocks={stocks}       onStocks={setStocks}
+          parts={parts}         onParts={setParts}
+          onRun={handleOptimize}
+          loading={loading}     error={error}
+          stats={response?.stats ?? null}
+        />
 
-      {loading && <LoadingOverlay />}
-      {!loading && !hasData && <EmptyState />}
+        {/* ── 우측 3D 뷰어 ────────────────────── */}
+        <div style={{ flex: 1, position: "relative", overflow: "hidden" }}>
+          <Canvas
+            shadows
+            gl={{ antialias: true, toneMapping: THREE.ACESFilmicToneMapping }}
+            style={{ position: "absolute", inset: 0 }}
+          >
+            <color attach="background" args={["#030814"]} />
+            <fog attach="fog" args={["#030814", 12, 32]} />
+            <Suspense fallback={null}>
+              {hasData ? (
+                <Scene sceneData={sceneData} />
+              ) : (
+                <>
+                  <PerspectiveCamera makeDefault position={[4, 3, 5]} fov={45} />
+                  <OrbitControls enableDamping dampingFactor={0.06} />
+                  <ambientLight intensity={0.4} />
+                  <Grid
+                    args={[20, 20]} position={[1.22, -0.01, 0]}
+                    cellSize={0.244} cellColor="#0d1e3a"
+                    sectionSize={2.44} sectionColor="#182f5a"
+                    fadeDistance={15} infiniteGrid
+                  />
+                </>
+              )}
+            </Suspense>
+          </Canvas>
 
-      {hasData && !loading && (
-        <Legend allPartIds={allPartIds} stats={response?.stats} />
-      )}
-
-      <RequestEditor
-        value={requestBody}
-        onChange={setRequestBody}
-        onRun={handleOptimize}
-        loading={loading}
-        error={error}
-      />
-    </div>
+          <ViewerHints />
+          {loading  && <LoadingOverlay />}
+          {!loading && !hasData && <EmptyState />}
+          {hasData  && !loading && <Legend allPartIds={allPartIds} stats={response?.stats} />}
+        </div>
+      </div>
+    </>
   );
 }
